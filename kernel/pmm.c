@@ -67,7 +67,11 @@ static uint32_t find_run(uint32_t frames) {
     uint32_t run = 0;
     uint32_t start = 0;
 
-    for (uint32_t f = 0; f < total_frames; f++) {
+    for (uint32_t i = 0; i < total_frames; i++) {
+        uint32_t f = search_from + i;
+        if (f >= total_frames) {
+            f -= total_frames;
+        }
         if (bitmap_test(f)) {
             run = 0;
             continue;
@@ -122,7 +126,7 @@ void pmm_init(uint32_t mem_top) {
         }
     }
 
-    uint32_t refs_frames = (total_frames + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
+    uint32_t refs_frames = (total_frames + 255) / 256;
     uint32_t refs_base = find_run(refs_frames);
     if (refs_base) {
         for (uint32_t i = 0; i < refs_frames; i++) {

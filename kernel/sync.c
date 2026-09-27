@@ -203,7 +203,9 @@ void mutex_lock(mutex_t *m) {
             f = irq_save();
         }
     }
-    m->waiters--;
+    if (m->owner == me) {
+        m->waiters--;
+    }
     irq_restore(f);
 }
 

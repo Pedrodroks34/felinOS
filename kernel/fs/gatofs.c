@@ -339,7 +339,7 @@ static void itrunc(struct vinode *in) {
 static int pread_i(struct vinode *in, uint32_t off, void *buf, uint32_t len) {
     if (off >= in->size) return 0;
     if (len > in->size - off) len = in->size - off;
-    static uint8_t tmp[BS];
+    uint8_t tmp[BS];
     uint8_t *out = buf;
     uint32_t done = 0;
     while (done < len) {
@@ -360,7 +360,7 @@ static int pread_i(struct vinode *in, uint32_t off, void *buf, uint32_t len) {
 /* writes and updates in->size; caller stores inode */
 static int pwrite_i(struct vinode *in, uint32_t off, const void *buf, uint32_t len) {
     const uint8_t *src = buf;
-    static uint8_t tmp[BS];
+    uint8_t tmp[BS];
     uint32_t done = 0;
     if (len > 0xFFFFFFFFu - off) len = 0xFFFFFFFFu - off;
     while (done < len) {
@@ -387,7 +387,7 @@ static int pwrite_i(struct vinode *in, uint32_t off, const void *buf, uint32_t l
 static int dir_find(uint32_t dino, const char *name, uint32_t *ino, uint8_t *type) {
     struct vinode d;
     if (iread(dino, &d) < 0) return GATOFS_EIO;
-    static struct vdirent buf[BS / DE_SIZE];
+    struct vdirent buf[BS / DE_SIZE];
     for (uint32_t off = 0; off < d.size; off += BS) {
         int r = pread_i(&d, off, buf, BS);
         if (r < 0) return r;
@@ -408,7 +408,7 @@ static int dir_add(uint32_t dino, const char *name, uint32_t ino, uint8_t type) 
     memset(&e, 0, sizeof(e));
     e.ino = ino; e.type = type;
     strlcpy(e.name, name, sizeof(e.name));
-    static struct vdirent buf[BS / DE_SIZE];
+    struct vdirent buf[BS / DE_SIZE];
     uint32_t pos = d.size;
     for (uint32_t off = 0; off < d.size; off += BS) {
         int r = pread_i(&d, off, buf, BS);
@@ -425,7 +425,7 @@ static int dir_add(uint32_t dino, const char *name, uint32_t ino, uint8_t type) 
 static int dir_del(uint32_t dino, const char *name) {
     struct vinode d;
     if (iread(dino, &d) < 0) return GATOFS_EIO;
-    static struct vdirent buf[BS / DE_SIZE];
+    struct vdirent buf[BS / DE_SIZE];
     for (uint32_t off = 0; off < d.size; off += BS) {
         int r = pread_i(&d, off, buf, BS);
         if (r < 0) return r;
@@ -444,7 +444,7 @@ static int dir_del(uint32_t dino, const char *name) {
 static int dir_empty(uint32_t dino) {
     struct vinode d;
     if (iread(dino, &d) < 0) return 0;
-    static struct vdirent buf[BS / DE_SIZE];
+    struct vdirent buf[BS / DE_SIZE];
     for (uint32_t off = 0; off < d.size; off += BS) {
         int r = pread_i(&d, off, buf, BS);
         if (r < 0) return 0;

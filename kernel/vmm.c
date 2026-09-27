@@ -319,6 +319,16 @@ static int copy_on_write(struct vm_region *region, uint32_t addr, uint32_t entry
     uint32_t phys = entry & PAGE_MASK;
     uint32_t flags = page_flags(region);
 
+    /* If the page is already COW (shared but copy-on-write), just make it writable.
+     * This handles the case where a second write fault occurs on an already-COW page. */
+    if (entry & PAGE_COW) {
+        if (pmm_frame_refs(phys) <= 1) {
+            paging_set_entry(addr, phys | flags);
+            return 0;
+        }
+        /* Still shared but already COW - need to actually copy */
+    }
+
     if (pmm_frame_refs(phys) <= 1) {
         paging_set_entry(addr, phys | flags);
         return 0;
