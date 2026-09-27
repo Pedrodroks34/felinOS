@@ -108,15 +108,6 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     pic_remap();
     boot_step("interrupt table", "32 exceptions, 16 hardware IRQs");
 
-    apic_init();
-    if (apic_is_present()) {
-        snprintf(detail, sizeof(detail), "local APIC at 0x%08x, %u CPU(s)",
-                 apic_get_base(), smp_cpu_count());
-    } else {
-        snprintf(detail, sizeof(detail), "not present, using PIC");
-    }
-    boot_step("apic", detail);
-
     system_init((magic == MULTIBOOT_BOOTLOADER_MAGIC) ? mbi : NULL);
     snprintf(detail, sizeof(detail), "%u KB reported by the bootloader", system_total_kb());
     boot_step("memory map", detail);
@@ -145,6 +136,19 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     snprintf(detail, sizeof(detail), "%u KB demand-paged heap at 0x%08x",
              vmm_heap_size() / 1024u, vmm_heap_base());
     boot_step("kernel heap", detail);
+
+    /* The APIC maps its own MMIO windows through the VMM, so it can only be
+     * brought up once paging, the VMM and the heap exist. Nothing between the
+     * interrupt table and here touches it, and nothing after here needs it
+     * before it runs. */
+    apic_init();
+    if (apic_is_present()) {
+        snprintf(detail, sizeof(detail), "local APIC at 0x%08x, %u CPU(s)",
+                 apic_get_base(), smp_cpu_count());
+    } else {
+        snprintf(detail, sizeof(detail), "not present, using PIC");
+    }
+    boot_step("apic", detail);
 
     pit_init();
     boot_step("system timer", "PIT channel 0 at 100 Hz");

@@ -3,6 +3,7 @@
 #include "gdt.h"
 #include "io.h"
 #include "pmm.h"
+#include "console.h"
 #include "drivers/pit.h"
 #include "lib/string.h"
 #include "fpu.h"
@@ -712,6 +713,12 @@ void sched_run(void (*shell_entry)(void *)) {
     if (shell_task) {
         foreground = shell_task->pid;
         task_start(shell_task);
+    } else {
+        /* Without this the loop below finds an empty run queue and parks in
+         * 'sti; hlt' forever: a silent hang with no prompt and no panic, which
+         * is indistinguishable from a boot that stopped on its own. Say why. */
+        klog("sched: cannot create the shell task (no free slot, or no %u "
+             "contiguous frames for its stack)", SHELL_STACK_BYTES);
     }
     sti();
     for (;;) {

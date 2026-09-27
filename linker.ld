@@ -17,6 +17,15 @@ SECTIONS
         *(.ap_tramp)
     }
 
+    /* Xen PVH note, so QEMU's -kernel loader can boot the kernel with no
+     * bootloader in the middle. It has to be a PT_NOTE segment, which is why
+     * it is placed explicitly here instead of falling into the /DISCARD/ rule
+     * for .note* below. The value in it is the absolute 32-bit entry address;
+     * see boot.s. */
+    .note.Xen ALIGN(4) : {
+        *(.note.Xen)
+    }
+
     . = 1M;
 
     kernel_start = .;

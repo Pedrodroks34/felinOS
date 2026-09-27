@@ -7,6 +7,7 @@
 #include "drivers/vga.h"
 #include "drivers/rtc.h"
 #include "drivers/pit.h"
+#include "drivers/input.h"
 #include "drivers/cpu.h"
 #include "drivers/apic.h"
 #include "drivers/power.h"
@@ -107,6 +108,58 @@ int cmd_uptime(int argc, char **argv, struct stream *in, struct stream *out) {
 int cmd_date(int argc, char **argv, struct stream *in, struct stream *out) {
     struct rtc_time t;
     rtc_read(&t);
+
+    /* "date -s YYYY-MM-DD hh:mm:ss" writes the CMOS clock. The fields are
+     * applied together rather than one at a time so the clock never sits at an
+     * impossible date, and unset fields keep their current value. */
+    if (argc >= 2 && strcmp(argv[1], "-s") == 0) {
+        if (argc != 4) {
+            cmd_error(out, "date", NULL, "usage: date -s YYYY-MM-DD hh:mm:ss");
+            return 1;
+        }
+        const char *ds = argv[2];
+        const char *ts = argv[3];
+        if (strlen(ds) != 10 || ds[4] != '-' || ds[7] != '-') {
+            cmd_error(out, "date", argv[2], "expected YYYY-MM-DD");
+            return 1;
+        }
+        if (strlen(ts) != 8 || ts[2] != ':' || ts[5] != ':') {
+            cmd_error(out, "date", argv[3], "expected hh:mm:ss");
+            return 1;
+        }
+
+        char yearbuf[5], hourbuf[3], minbuf[3], secbuf[3];
+        memcpy(yearbuf, ds, 4);      yearbuf[4] = '\0';
+        memcpy(hourbuf, ts, 2);      hourbuf[2] = '\0';
+        memcpy(minbuf, ts + 3, 2);   minbuf[2] = '\0';
+        memcpy(secbuf, ts + 6, 2);   secbuf[2] = '\0';
+
+        t.year  = (uint16_t)atoi(yearbuf);
+        t.month = (uint8_t)atoi(ds + 5);
+        t.day   = (uint8_t)atoi(ds + 8);
+        t.hour  = (uint8_t)atoi(hourbuf);
+        t.minute = (uint8_t)atoi(minbuf);
+        t.second = (uint8_t)atoi(secbuf);
+
+        if (rtc_write(&t) != 0) {
+            cmd_error(out, "date", NULL, "out of range, or the RTC cannot hold that year");
+            return 1;
+        }
+
+        /* Read back rather than echo the request: the RTC may have been in
+         * 12-hour mode, and the caller deserves to see what was really stored. */
+        rtc_read(&t);
+        int wd = day_of_week(t.year, t.month, t.day);
+        st_printf(out, "%s %s %u %02u:%02u:%02u UTC %u\n",
+                  weekday_name(wd), month_name(t.month), t.day,
+                  t.hour, t.minute, t.second, t.year);
+        return 0;
+    }
+
+    if (argc > 1) {
+        cmd_error(out, "date", NULL, "usage: date [-s YYYY-MM-DD hh:mm:ss]");
+        return 1;
+    }
 
     int wd = day_of_week(t.year, t.month, t.day);
     st_printf(out, "%s %s %u %02u:%02u:%02u UTC %u\n",
@@ -683,6 +736,141 @@ int cmd_beep(int argc, char **argv, struct stream *in, struct stream *out) {
         duration = 5000;
     }
     speaker_beep(frequency, duration);
+    return 0;
+}
+
+/* Note tables for the built-in tunes, as MIDI note numbers so the numbers
+ * line up with something a musician recognises. 0 is a rest. */
+struct tune_note {
+    uint8_t note;      /* MIDI note, 0 = silence */
+    uint16_t ms;
+};
+
+static const struct tune_note tune_scale[] = {
+    { 60, 150 }, { 62, 150 }, { 64, 150 }, { 65, 150 },
+    { 67, 150 }, { 69, 150 }, { 71, 150 }, { 72, 400 },
+};
+
+static const struct tune_note tune_alarm[] = {
+    { 88, 120 }, { 0, 80 }, { 88, 120 }, { 0, 80 },
+    { 88, 120 }, { 0, 80 }, { 88, 320 },
+};
+
+static const struct tune_note tune_mario[] = {
+    { 76, 110 }, { 0, 40 }, { 76, 110 }, { 0, 40 },
+    { 76, 110 }, { 0, 40 }, { 67, 120 }, { 0, 40 },
+    { 72, 110 }, { 0, 40 }, { 72, 110 }, { 0, 40 },
+    { 72, 110 }, { 0, 40 }, { 64, 110 }, { 0, 40 },
+    { 67, 110 }, { 0, 40 }, { 67, 110 }, { 0, 40 },
+    { 67, 110 }, { 0, 40 }, { 64, 110 }, { 0, 40 },
+    { 69, 110 }, { 0, 40 }, { 69, 110 }, { 0, 40 },
+    { 69, 110 }, { 0, 40 }, { 55, 110 }, { 0, 40 },
+    { 71, 110 }, { 0, 40 }, { 71, 110 }, { 0, 40 },
+    { 71, 110 }, { 0, 40 }, { 62, 110 }, { 0, 40 },
+    { 74, 110 }, { 0, 40 }, { 74, 110 }, { 0, 40 },
+    { 74, 110 }, { 0, 40 }, { 64, 110 }, { 0, 40 },
+    { 72, 110 }, { 0, 40 }, { 72, 110 }, { 0, 40 },
+    { 72, 110 }, { 0, 40 }, { 55, 110 }, { 0, 40 },
+};
+
+static const struct tune_note tune_dOSToN[] = {
+    { 69, 200 }, { 71, 200 }, { 74, 200 }, { 71, 200 },
+    { 72, 200 }, { 74, 200 }, { 76, 200 }, { 74, 200 },
+    { 69, 200 }, { 71, 200 }, { 74, 200 }, { 71, 200 },
+    { 67, 200 }, { 69, 200 }, { 72, 200 }, { 76, 800 },
+};
+
+struct tune {
+    const char *name;
+    const struct tune_note *notes;
+    int count;
+};
+
+/* MIDI note to Hz without touching the FPU: the kernel links no libm, so the
+ * semitone ratios are precomputed in Q16. 440 * 2^((note - 69) / 12) is split
+ * into whole octaves (a shift) and a remainder looked up in the table. */
+static uint32_t midi_hz(uint8_t note) {
+    static const uint32_t semitone_q16[12] = {
+        65536, 69433, 73562, 77936, 82570, 87484,
+        92682, 98215, 104043, 110219, 116796, 123741
+    };
+
+    int d = (int)note - 69;
+    int octaves = d / 12;
+    int rest = d % 12;
+    if (rest < 0) {
+        rest += 12;
+        octaves -= 1;
+    }
+
+    uint32_t hz = (440u * semitone_q16[rest]) >> 16;
+    if (octaves >= 0) {
+        for (int i = 0; i < octaves; i++) {
+            hz <<= 1;
+        }
+    } else {
+        for (int i = 0; i < -octaves; i++) {
+            hz >>= 1;
+        }
+    }
+    return hz;
+}
+
+static const struct tune tunes[] = {
+    { "scale", tune_scale, (int)(sizeof(tune_scale) / sizeof(tune_scale[0])) },
+    { "alarm", tune_alarm, (int)(sizeof(tune_alarm) / sizeof(tune_alarm[0])) },
+    { "mario", tune_mario, (int)(sizeof(tune_mario) / sizeof(tune_mario[0])) },
+    { "doom",   tune_dOSToN, (int)(sizeof(tune_dOSToN) / sizeof(tune_dOSToN[0])) },
+};
+
+int cmd_tune(int argc, char **argv, struct stream *in, struct stream *out) {
+    (void)in;
+
+    if (argc < 2 || strcmp(argv[1], "list") == 0) {
+        st_printf(out, "tunes:\n");
+        for (int i = 0; i < (int)(sizeof(tunes) / sizeof(tunes[0])); i++) {
+            st_printf(out, "  %-6s %d note(s)\n", tunes[i].name, tunes[i].count);
+        }
+        return 0;
+    }
+
+    const struct tune *t = NULL;
+    for (int i = 0; i < (int)(sizeof(tunes) / sizeof(tunes[0])); i++) {
+        if (strcmp(argv[1], tunes[i].name) == 0) {
+            t = &tunes[i];
+            break;
+        }
+    }
+    if (!t) {
+        cmd_error(out, "tune", argv[1], "unknown tune, try 'tune list'");
+        return 1;
+    }
+
+    /* A whole tune can be several seconds, so let a keypress stop it instead of
+     * locking the shell for the full duration. */
+    input_flush();
+    for (int i = 0; i < t->count; i++) {
+        if (input_poll() >= 0) {
+            /* input_poll() already took the key; asking for another one would
+             * block the shell until something else happened to be typed. Drop
+             * the rest of the line that key belonged to. */
+            input_flush();
+            st_printf(out, "\ninterrupted after %d of %d note(s)\n", i, t->count);
+            return 0;
+        }
+        if (t->notes[i].note == 0) {
+            sleep_ms(t->notes[i].ms);
+            continue;
+        }
+        /* Equal temperament, A4 = 440 Hz at MIDI note 69. */
+        uint32_t hz = midi_hz(t->notes[i].note);
+        if (hz < 20) {
+            hz = 20;
+        } else if (hz > 20000) {
+            hz = 20000;
+        }
+        speaker_beep(hz, t->notes[i].ms);
+    }
     return 0;
 }
 

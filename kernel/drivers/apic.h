@@ -78,9 +78,15 @@
 #define IOAPIC_REG_REDIR_BASE 0x10
 #define IOAPIC_MAX_IRQS     24
 
-/* I/O APIC Redirection Table entry bits: 0-7 vector, 8-10 delivery mode,
- * 11 destination mode, 13 delivery status (read-only), 15 level, 16 active
- * low, 17 masked, 18-31 destination (logical mode). */
+/* Where the two indirect-access registers live in the I/O APIC's MMIO window.
+ * Offset 0x00 selects the register, offset 0x10 is the register itself; the
+ * redirection table proper only begins at 0x40. */
+#define IOAPIC_MMIO_IOREGSEL 0x00
+#define IOAPIC_MMIO_IOWIN    0x10
+
+/* I/O APIC Redirection Table entry bits (low dword): 0-7 vector, 8-10
+ * delivery mode, 11 destination mode, 13 polarity, 15 trigger mode, 16 mask.
+ * The destination APIC ID lives in bits 31:24 of the *high* dword, not here. */
 #define IOAPIC_REDIR_VECTOR     0x000000FF
 #define IOAPIC_REDIR_DM_FIXED   0x00000000
 #define IOAPIC_REDIR_DM_LOWPRI  0x00000300
@@ -91,8 +97,13 @@
 #define IOAPIC_REDIR_DM_PHYSICAL 0x00000000
 #define IOAPIC_REDIR_DM_PENDING 0x00001000
 #define IOAPIC_REDIR_DM_TRIGGER 0x00008000  /* 0 = edge, 1 = level */
-#define IOAPIC_REDIR_ACTIVE_LOW 0x00010000
-#define IOAPIC_REDIR_DM_MASKED  0x00020000
+#define IOAPIC_REDIR_DM_LEVEL   0x00008000
+#define IOAPIC_REDIR_ACTIVE_LOW 0x00002000
+/* Bit 16 is the mask, not bit 17. Setting 17 leaves the entry live, which is
+ * how a redirection entry the driver believes it has parked goes on injecting
+ * its vector -- and, because the I/O APIC arbitrates by vector number, it then
+ * starves every lower-numbered vector behind it. */
+#define IOAPIC_REDIR_DM_MASKED  0x00010000
 
 /* Interrupt vectors */
 #define APIC_TIMER_VECTOR   0x32
@@ -119,10 +130,12 @@ uint32_t apic_get_base(void);
 uint32_t apic_get_ioapic_base(void);
 uint8_t apic_get_ioapic_id(void);
 
-/* APIC functions */
+/* APIC functions. An application processor reaches its per-CPU setup through
+ * ap_startup(), entered from the AP trampoline; there is no separate
+ * init-as-AP entry point. */
 void apic_init(void);
-void apic_init_as_ap(void);
 void apic_send_eoi(uint32_t vector);
+void ioapic_send_eoi(uint8_t vector);
 void apic_send_ipi(int apic_id, uint8_t vector, uint32_t dest_mode, uint32_t level);
 void apic_start_ap(int apic_id, uint32_t start_addr);
 uint32_t apic_read(uint32_t reg);

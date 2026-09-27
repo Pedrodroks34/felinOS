@@ -335,8 +335,12 @@ static int ata_find_pci_controller(void) {
 
         if (pci->class_code == 0x01 && pci->subclass == 0x01) {
             ide_pci_dev = pci;
+            /* The two channels sit on consecutive legacy IRQs (14 and 15).
+             * Giving them the same line let the secondary's
+             * irq_install_handler() overwrite the primary's handler, so
+             * commands issued on the primary channel never got serviced. */
             ide_irq[0] = pci->irq;
-            ide_irq[1] = pci->irq;
+            ide_irq[1] = pci->irq + 1;
 
             uint32_t bar0 = pci_read_config(pci->bus, pci->slot, pci->func, 0x10);
             uint32_t bar1 = pci_read_config(pci->bus, pci->slot, pci->func, 0x14);

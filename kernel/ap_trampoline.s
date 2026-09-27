@@ -43,10 +43,12 @@ ap_pm_start:
     mov %ax, %ss
 
     /* Long mode needs PAE enabled before the far jump, otherwise the
-     * processor refuses to leave protected mode. */
-    mov %cr0, %eax
-    or $0x80000000, %eax
-    mov %eax, %cr0
+     * processor refuses to leave protected mode. This is CR4.PAE, not CR0.PG:
+     * paging cannot be switched on yet, because this processor has no page
+     * tables at all until it loads CR3 further down. */
+    mov %cr4, %eax
+    or $0x20, %eax
+    mov %eax, %cr4
 
     lgdtl gdt64_ptr
     FAR_JMP16 0x08, ap_long_start

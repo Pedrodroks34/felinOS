@@ -99,4 +99,26 @@ halt_loop:
     hlt
     jmp halt_loop
 
+/* Xen PVH boot note. Multiboot is the protocol GRUB speaks, but QEMU's -kernel
+ * no longer loads Multiboot images: it accepts a bzImage, or an ELF carrying
+ * this note, and refuses anything else with "Error loading uncompressed kernel
+ * without PVH ELF Note". Emitting it costs nothing and lets the kernel boot
+ * straight from the ELF, with no ISO and no GRUB in the way, which is what
+ * 'make test', 'make run-kernel' and 'make run-smp' rely on.
+ *
+ * XEN_ELFNOTE_PHYS32_ENTRY names the 32-bit protected-mode entry point, which
+ * is _start above, and QEMU takes it as the absolute address to jump to. */
+.set XEN_ELFNOTE_PHYS32_ENTRY, 18
+
+.section .note.Xen, "a", @note
+.align 4
+    .long 4, 4, XEN_ELFNOTE_PHYS32_ENTRY   /* namesz, descsz, type */
+    .asciz "Xen"
+    .align 4
+    /* QEMU reads this as the absolute address of the 32-bit entry point, not
+     * as an offset from the lowest PT_LOAD: writing _start - 0x7000 here
+     * lands the CPU 0x7000 below _start, executing the middle of .text as
+     * though it were the boot stub, which then runs off into the zero page. */
+    .long _start
+
 .section .note.GNU-stack,"",@progbits

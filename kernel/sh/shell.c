@@ -91,7 +91,7 @@ static const struct command commands[] = {
     { "which", "locate a command", "which <command...>", cmd_which },
     { "uname", "print system information", "uname [-a] [-r] [-m] [-n]", cmd_uname },
     { "uptime", "show how long the system has run", "uptime", cmd_uptime },
-    { "date", "show the current date and time", "date [-u]", cmd_date },
+    { "date", "show or set the current date and time", "date [-s YYYY-MM-DD hh:mm:ss]", cmd_date },
     { "cal", "display a calendar", "cal [month] [year]", cmd_cal },
     { "free", "show memory usage", "free [-h]", cmd_free },
     { "lsmem", "show memory layout", "lsmem", cmd_lsmem },
@@ -99,6 +99,7 @@ static const struct command commands[] = {
     { "kill", "send a signal to a process", "kill [-signal] <pid...>", cmd_kill },
     { "renice", "change the scheduling weight of a process", "renice <nice> <pid...>", cmd_renice },
     { "sched", "show or tune the scheduler", "sched [quantum <ticks>]", cmd_sched },
+    { "top", "live task view with per-task CPU share", "top [iterations]", cmd_top },
     { "fg", "bring a background process to the foreground", "fg [pid]", cmd_fg },
     { "vmm", "inspect and drive the virtual memory manager", "vmm [stat|regions|spaces|map|alloc|free|list|touch|swapout|reclaim|growheap|test]", cmd_vmm },
     { "pmap", "show the address space layout and page mappings", "pmap [-a]", cmd_pmap },
@@ -130,6 +131,7 @@ static const struct command commands[] = {
     { "unset", "remove an environment variable", "unset <name>", cmd_unset },
     { "sleep", "wait for a number of seconds", "sleep <seconds>", cmd_sleep },
     { "beep", "sound the PC speaker", "beep [frequency] [ms]", cmd_beep },
+    { "tune", "play a tune on the PC speaker", "tune [name]", cmd_tune },
     { "time", "time the execution of a command", "time <command...>", cmd_time },
     { "sync", "flush pending writes", "sync", cmd_sync },
     { "true", "return success", "true", cmd_true },
@@ -161,7 +163,7 @@ static const struct command commands[] = {
     { "dhcp", "obtain an address lease via DHCP", "dhcp", cmd_dhcp },
     { "dns", "resolve a hostname to an IPv4 address", "dns <hostname>", cmd_dns },
     { "simplecc", "simple C compiler", "simplecc", cmd_simplecc },
-    { "test", "run automated test suite", "test", cmd_test }
+    { "selftest", "run the automated test suite", "selftest", cmd_selftest }
 };
 
 static const int command_count = (int)(sizeof(commands) / sizeof(commands[0]));

@@ -14,30 +14,40 @@ and paging, installs a full interrupt table, brings up the hardware it finds
 on the machine, builds its file tree from a mount table and drops the user into an
 interactive shell with 90 commands.
 
+Captured from `qemu-system-x86_64 -kernel gato.bin -m 64M`, so it is one
+processor, no disks and no DHCP lease. `make run` reports the disks and the
+extra processors; the order of the lines is the same.
+
 ```
 FelinOS 0.2  -  Gato kernel 0.2 (x86_64)
 
   [ok] global descriptors     flat 64-bit code and data segments
-  [ok] interrupt table        32 exceptions, 16 hardware IRQs, 5 APIC vectors
-  [ok] memory map             65023 KB reported by the bootloader
-  [ok] physical memory        16352 frames (63 MB), 15717 free
-  [ok] paging                 63 MB mapped, 30 tables, directory at 0x0015c000
+  [ok] interrupt table        32 exceptions, 16 hardware IRQs
+  [ok] memory map             32384 KB reported by the bootloader
+  [ok] physical memory        8192 frames (32 MB), 7688 free
+  [ok] paging                 32 MB mapped, 16 tables, directory at 0x001f8000
   [ok] virtual memory         demand paging, copy-on-write, 5 regions
-  [ok] kernel heap            55768 KB demand-paged heap at 0xc0000000
+  [ok] kernel heap            22484 KB demand-paged heap at 0xc0000000
+  [ok] apic                   local APIC at 0xfee00000, 1 CPU(s)
   [ok] system timer           PIT channel 0 at 100 Hz
-  [ok] local apic             0xfee00000, 4 processor(s), 4 online
-  [ok] acpi                   2 tables, _S5_ sleep type 6
+  [ok] scheduler              preemptive round-robin, 50 ms time slices
   [ok] keyboard               PS/2 set 1, shift, ctrl and caps lock
+  [ok] framebuffer            320x200 256-color at 0xA0000, inactive (VGA text still active)
+  [ok] font renderer          8x16 bitmap font for framebuffer
   [ok] serial console         COM1 at 115200 baud, input and output
-  [ok] real time clock        2026-09-19 12:00:00
-  [ok] processor              GenuineIntel family 6 model 6
+  [ok] real time clock        2026-09-27 05:05:54
+  [ok] processor              AuthenticAMD family 15 model 107
   [ok] pci bus                6 devices on the bus
-  [ok] ata controller         4 device(s), first is QEMU HARDDISK
+  [ok] network                e1000 driver, mac 52:54:00:12:34:56, run 'dhcp' or 'ifconfig' to configure
+  [ok] acpi                   rev 0, 5 tables, S5 via PM1a 0x604, reset legacy
   [ok] buffer cache           4 MB, 1024 lines of 4 KB over the ATA layer
-  [ok] swap                   63 MB on hdd, 16376 slots
-  [ok] network                e1000, 10.0.2.15/24 via DHCP
-  [ok] virtual filesystem     / is gatofs (hdb), /dev, /proc and /tmp mounted
-  [ok] gatofs                 GatoFS on hdb, 256 MB
+  [ok] ata controller         1 device(s), first is QEMU DVD-ROM
+  [ok] ahci controller        no SATA devices
+  [ok] fat32                  FAT32 reader ready for host file exchange
+  [ok] swap                   no swap area (mkswap <disk>)
+  [ok] virtual filesystem     / is ramfs (none), /dev, /proc and /tmp mounted
+  [ok] gatofs                 no volume (gatofs format <disk>)
+  [ok] user mode              ring 3, per-process address spaces, int 0x80 syscalls, ELF loader
   [ok] shell                  vsh with pipes, redirection and history
 
 Welcome to FelinOS running the Gato kernel.
@@ -48,13 +58,22 @@ root@felinos:/root$
 
 ## Building
 
-Requirements: `gcc` (x86-64; `-m32` only for the `hello32` demo), `binutils`,
-`make`, and for the bootable image `grub-mkrescue`, `xorriso` and `mtools`.
+Requirements: `gcc` (x86-64; `-m32` only for the `hello32` demo), `binutils`
+and `make`. None of that is needed to boot: the kernel boots straight from its
+own ELF, with no bootloader in the path.
+
+The ISO is packaging, not the product, so it is a separate target and needs
+extra host tools: `grub-mkrescue`, `xorriso` and `mtools`, plus GRUB's BIOS
+modules (`grub-pc-bin` on Debian/Ubuntu, `extra/grub-bios` on Arch). Without
+the BIOS modules the ISO still builds but only boots under UEFI firmware,
+because GRUB emits one El Torito entry per platform it has modules for; the
+build says so instead of leaving you with an unbootable CD.
 
 ```sh
-make            # builds gato.bin and felinos.iso
-make clean      # removes objects, the kernel and the iso
-make distclean  # also removes the virtual disk images
+make              # builds the kernel: gato.bin
+make felinos.iso  # builds the bootable ISO, if the host tools are present
+make clean        # removes objects, the kernel and the iso
+make distclean    # also removes the virtual disk images
 ```
 
 The kernel and the user programs build without warnings; the CI workflow
@@ -63,12 +82,26 @@ fails the build if that ever stops being true.
 ## Running
 
 ```sh
-make run         # boots felinos.iso through GRUB in QEMU
-make run-kernel  # boots gato.bin directly, skipping the bootloader
-make run-serial  # same, but headless: the whole session goes over COM1
-make run-smp     # boots with 4 processors, so the AP bring-up path runs
-make test        # runs the in-kernel test suite and exits
+make run        # boots felinos.iso through GRUB in QEMU
+make run-efi    # same, but under OVMF, for a UEFI-only ISO
+make run-kernel # boots gato.bin directly, skipping the bootloader
+make run-serial # same, but headless: the whole session goes over COM1
+make run-smp    # boots with 4 processors, so the AP bring-up path runs
+make test       # runs the in-kernel test suite and exits with its result
 ```
+
+`make run-kernel` and `make test` need no ISO and no GRUB, so they work on a
+host that has nothing but a compiler and QEMU. Getting the kernel to load that
+way is the reason the kernel carries a Xen PVH note (`XEN_ELFNOTE_PHYS32_ENTRY`
+in `boot/boot.s`): QEMU 9.1 dropped Multiboot support in `-kernel` and now
+refuses anything that is neither a `bzImage` nor an ELF with that note, with
+"Error loading uncompressed kernel without PVH ELF Note".
+
+One difference worth knowing: `-kernel` gives the kernel no bootloader memory
+map, so it falls back to a fixed 32 MB estimate and sizes the PMM from that
+(see [Virtual memory](#virtual-memory-and-swap)). Through GRUB the real map
+is used. `make run` and `make run-kernel` therefore do not exercise quite the
+same memory path.
 
 `make run` attaches four IDE disks so that every storage path has something
 to work with: `disk.img` (GatoFS root), `gatofs.img` (a second GatoFS
@@ -173,7 +206,7 @@ kernel/
     nano.c           the full-screen text editor
     script.c         the shell script reader behind `source`
     simplecc.c       a small C compiler that runs inside the shell
-    test.c           the automated test suite behind `test` and `make test`
+    test.c           the automated test suite behind `selftest` and `make test`
 ```
 
 `pmm.c` tracks every physical frame in a bitmap, with a reference count per
@@ -261,7 +294,7 @@ Network: `ifconfig` `ping` `dhcp` `dns`
 Users: `login` `su` `passwd` `useradd` `id`
 
 Development: `source` (run a shell script) `simplecc` (the in-shell C
-compiler) `test` (the automated suite)
+compiler) `selftest` (the automated suite)
 
 Every command has a manual page: `man <command>`.
 
@@ -279,6 +312,26 @@ Virtual memory: `vmm` `pmap` `vmstat` `mkswap` `swapon` `swapoff`
 `swapinfo` `memtest`
 
 Every command has a manual page: `man <command>`.
+
+## Tests
+
+`selftest` runs the in-kernel suite and returns 0 only if every case passed,
+so it is usable from a script and from `if`. It covers the PMM, the VMM, the
+heap, the string and formatting helpers, the timer, the scheduler and the RTC,
+and prints a `Total: N  Passed: N  Failed: N` summary at the end.
+
+`make test` runs that same suite unattended: `tools/runtests.py` boots the
+kernel headless, waits for the shell prompt, types `selftest`, reads the
+summary back over the serial console, powers the machine off and exits with
+the result — 0 when everything passed, 1 on a failure, 2 if the guest panicked
+or never reached a prompt, 124 on timeout. It attaches the same four disks as
+`make run`, so the storage-backed cases have real devices to work with.
+
+The two are deliberately different names. `test` is the POSIX-style condition
+evaluator (`test -f /etc/passwd`, `test 1 -lt 2`) and takes arguments;
+`selftest` takes none. They were the same command name at one point, and since
+the command table is searched in order, the suite was unreachable behind the
+evaluator.
 
 ## Buffer cache
 
@@ -403,6 +456,27 @@ swapoff            # page everything back into RAM, then disable
 `make run` now attaches a third disk, `swap.img` (`make run SWAP_MB=128`
 changes its size), so a fresh checkout has a working swap device without
 any manual step.
+
+## How much memory the kernel gets
+
+The PMM is sized from what the bootloader reports, not by probing: `mem_top`
+is `1 MiB + mem_upper_kb * 1024`, where `mem_upper_kb` comes from the
+Multiboot memory fields and, failing that, from a hardcoded 31744 KB (32 MB).
+The E820 map, when present, is also what keeps the PMM from handing out frames
+the firmware is still using — the ACPI tables, the MADT and the option ROMs all
+live in RAM above 1 MiB.
+
+Booted through GRUB (`make run`, `make run-efi`) the kernel gets both, so it
+sees the machine's real size and reserves the firmware's structures. Booted
+straight from the ELF (`make run-kernel`, `make test`) there is no Multiboot
+structure at all: the kernel falls back to 32 MB and reserves no firmware
+ranges. That is why a `-m 64M` guest reports 8192 frames under
+`make run-kernel` and 16352 under `make run`.
+
+So the fallback is a safe underestimate rather than a wrong answer, but it
+does mean the direct-boot path is not exercising the same memory code. Closing
+the gap means giving the boot stub a 16-bit `int 0x15` E820 trampoline to
+build a `multiboot_info` when the magic is absent; it is not done yet.
 
 ## Roadmap
 

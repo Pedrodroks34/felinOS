@@ -52,7 +52,11 @@ QEMU_DISKS = -drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
 
 QEMU_COMMON = -m 64M $(QEMU_DISKS) $(QEMU_NET)
 
-all: $(ISO)
+# The kernel is the product; the ISO is packaging. Keeping the ISO out of the
+# default target means a plain `make` succeeds on hosts without GRUB's host-side
+# tools, and `make run-kernel` boots the result with QEMU's -kernel. Ask for the
+# ISO explicitly with `make $(ISO)`.
+all: $(BIN)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -83,11 +87,8 @@ $(KELF): $(OBJS)
 $(BIN): $(KELF)
 	objcopy -O elf32-i386 $(KELF) $(BIN)
 
-$(ISO): $(BIN) boot/grub/grub.cfg
-	mkdir -p iso/boot/grub
-	cp $(BIN) iso/boot/gato.bin
-	cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
-	grub-mkrescue -o $(ISO) iso
+$(ISO): $(BIN) boot/grub/grub.cfg tools/mkiso.sh
+	tools/mkiso.sh $(BIN) boot/grub/grub.cfg $(ISO)
 
 $(DISK):
 	dd if=/dev/zero of=$(DISK) bs=1M count=32 status=none
@@ -106,6 +107,25 @@ IMAGES = $(DISK) $(VDISK) $(SWAP) $(FATDISK)
 run: $(ISO) $(IMAGES)
 	qemu-system-x86_64 -cdrom $(ISO) -boot d $(QEMU_COMMON) -serial stdio
 
+# The ISO is only UEFI-bootable when the host's GRUB has no BIOS modules, which
+# is the case unless grub-pc-bin (Debian) or extra/grub-bios (Arch) is
+# installed. run-efi boots such an ISO with OVMF; run-kernel sidesteps the
+# bootloader entirely and always works.
+OVMF_CODE ?= /usr/share/edk2-ovmf/OVMF_CODE_4M.fd
+OVMF_VARS ?= /usr/share/edk2-ovmf/OVMF_VARS_4M.fd
+OVMF_VARS_COPY = iso/OVMF_VARS.fd
+
+run-efi: $(ISO) $(IMAGES)
+	@command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not found"; exit 1; }
+	@test -f "$(OVMF_CODE)" || { echo "OVMF firmware not found at $(OVMF_CODE)"; \
+		echo "override with OVMF_CODE=... OVMF_VARS=..."; exit 1; }
+	@mkdir -p iso
+	@cp -f "$(OVMF_VARS)" "$(OVMF_VARS_COPY)"
+	qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
+		-cdrom $(ISO) $(QEMU_COMMON) -serial stdio
+
 run-kernel: $(BIN) $(IMAGES)
 	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -serial stdio
 
@@ -119,18 +139,18 @@ run-smp: $(BIN) $(IMAGES)
 
 clean:
 	rm -f $(OBJS) $(KELF) $(BIN) $(ISO) user/*.elf
-	rm -rf iso/boot/gato.bin
+	rm -rf iso/boot/gato.bin iso/boot/grub/eltorito.img
 
 distclean: clean
 	rm -f $(DISK) $(VDISK) $(SWAP) $(FATDISK)
 
 test: $(BIN) $(IMAGES)
 	@echo "Running automated tests in QEMU..."
-	@qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) \
-		-display none -serial stdio \
-		-append "test" \
+	@python3 tools/runtests.py \
+		-kernel $(BIN) $(QEMU_COMMON) \
+		-display none \
 		-monitor none \
 		-no-reboot \
-		-watchdog-action reset
+		-no-shutdown
 
-.PHONY: all run run-kernel run-serial run-smp clean distclean test
+.PHONY: all run run-efi run-kernel run-serial run-smp clean distclean test

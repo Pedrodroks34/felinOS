@@ -1,4 +1,5 @@
 #include "drivers/apic.h"
+#include "drivers/pic.h"
 #include "drivers/pci.h"
 #include "drivers/pit.h"
 #include "drivers/cpu.h"
@@ -95,6 +96,15 @@ void apic_init(void) {
     uint64_t apic_msr = rdmsr(APIC_BASE_MSR);
     lapic_phys_base = (uint32_t)(apic_msr & 0xFFFFF000);
 
+    /* Setting the Local APIC's own SVR bit is not by itself a statement to the
+     * CPU that interrupts are routed through the APIC; IA32_APIC_BASE is. Under
+     * -kernel no firmware did it for us. Set the two writable enable bits and
+     * keep the base address we just read. Bit 10 (x2APIC enable) is
+     * deliberately left alone: it is read-only, and writing it makes the CPU
+     * raise #GP. */
+    apic_msr |= (1ULL << 8) | (1ULL << 11);
+    wrmsr(APIC_BASE_MSR, apic_msr);
+
     lapic_mmio = (volatile uint32_t *)vmm_map_physical(lapic_phys_base, 0x1000, VM_READ | VM_WRITE | VM_UNCACHED, "lapic");
     if (!lapic_mmio) {
         klog("apic: failed to map Local APIC at 0x%08x", lapic_phys_base);
@@ -114,6 +124,10 @@ void apic_init(void) {
     apic_present = 1;
     klog("apic: Local APIC at 0x%08x, BSP APIC ID %u", lapic_phys_base, apic_id);
 
+    /* The 8259s are off the delivery path from here on; make sure they cannot
+     * keep the cascade line asserted behind the I/O APIC's back. */
+    pic_disable();
+
     ioapic_init();
     apic_setup_timer();
 }
@@ -127,17 +141,36 @@ void ioapic_init(void) {
         return;
     }
 
-    uint32_t id_reg = ioapic_mmio[IOAPIC_REG_ID / 4];
+    /* Go through the index/data pair: offset 0 is the index register, so
+     * reading it directly yields whatever was last selected rather than the
+     * ID register's contents. */
+    uint32_t id_reg = ioapic_read(IOAPIC_REG_ID);
     ioapic_id_val = (id_reg >> 24) & 0x0F;
 
     klog("apic: I/O APIC at 0x%08x, ID %u", ioapic_phys_base, ioapic_id_val);
 
+    /* Redirection entries name the *destination* Local APIC, which is not the
+     * I/O APIC's own ID: sending a timer tick to the wrong APIC means it is
+     * never delivered. Route everything to the BSP (set up in apic_init). */
+    uint8_t dest = apic_get_id();
+
+    /* Only the 16 legacy 8259 lines get a vector, laid out 0x20..0x2F to match
+     * the irq0..irq15 stubs. Extending the 0x20+i pattern over the whole table
+     * reached 0x37, where 0x32..0x35 are the *local* APIC's timer, error, IPI
+     * and reschedule vectors: a stray interrupt on entries 18..21 would land
+     * on the APIC's own handler, and 0x30/0x31/0x36/0x37 have no gate at all,
+     * so the CPU would take a #GP from an interrupt it could not have
+     * predicted. Everything above IRQ 15 is left masked with vector 0. */
     for (int i = 0; i < IOAPIC_MAX_IRQS; i++) {
-        ioapic_set_redirection(i, 0x20 + i, ioapic_id_val, 1);
+        if (i < 16) {
+            ioapic_set_redirection(i, 0x20 + i, dest, 1);
+        } else {
+            ioapic_set_redirection(i, 0, dest, 1);
+        }
     }
 
-    ioapic_set_redirection(0, 0x20, ioapic_id_val, 0);
-    ioapic_set_redirection(1, 0x21, ioapic_id_val, 0);
+    ioapic_set_redirection(0, 0x20, dest, 0);
+    ioapic_set_redirection(1, 0x21, dest, 0);
 }
 
 void apic_setup_timer(void) {
@@ -152,12 +185,19 @@ void apic_setup_timer(void) {
     /* IDT gates are set up in idt_install() */
 
     lapic_mmio[APIC_LVT_TMR / 4] = APIC_TIMER_VECTOR | APIC_LVT_PERIODIC;
+
+    /* The timer is armed and unmasked now, so it becomes the tick source. */
+    clockevent_select(CLOCKEVENT_LAPIC_TIMER);
 }
 
 /* APIC ISR C handlers called from assembly ISR stubs */
 void apic_timer_irq(struct regs *r) {
     apic_write(APIC_EOI, 0);
-    sched_tick();
+    if (clockevent_current() == CLOCKEVENT_LAPIC_TIMER) {
+        clockevent_tick();
+    } else {
+        sched_tick();
+    }
 }
 
 void apic_spurious_irq(struct regs *r) {
@@ -189,14 +229,32 @@ void apic_write(uint32_t reg, uint32_t value) {
 
 uint32_t ioapic_read(uint32_t reg) {
     if (!ioapic_mmio) return 0;
-    ioapic_mmio[0] = reg;
-    return ioapic_mmio[4 / 4];
+    /* The register file is reached indirectly: write the register number to
+     * IOREGSEL at offset 0x00, then read the data window at offset 0x10. The
+     * data window is *not* at offset 0x04 -- that address is reserved, so
+     * reading and writing there selected a register and then threw the value
+     * away, which left every redirection entry in its power-on state and
+     * meant no I/O APIC interrupt was ever delivered. */
+    ioapic_mmio[IOAPIC_MMIO_IOREGSEL / 4] = reg;
+    return ioapic_mmio[IOAPIC_MMIO_IOWIN / 4];
 }
 
 void ioapic_write(uint32_t reg, uint32_t value) {
     if (!ioapic_mmio) return;
-    ioapic_mmio[0] = reg;
-    ioapic_mmio[4 / 4] = value;
+    ioapic_mmio[IOAPIC_MMIO_IOREGSEL / 4] = reg;
+    ioapic_mmio[IOAPIC_MMIO_IOWIN / 4] = value;
+}
+
+/* The I/O APIC keeps in-service bits of its own. They are cleared by writing
+ * the vector to the I/O APIC's EOI register, which shares offset 0x00 with the
+ * ID register: reads see the ID, writes are the EOI. The Local APIC EOI does
+ * not touch them, so skipping this leaves the redirection entry stuck in
+ * service and the I/O APIC stops injecting that vector -- and, because it
+ * arbitrates by vector number, any lower-numbered vector behind it. That is
+ * why the PIT (vector 0x20) never arrived while the storm on 0x22 did. */
+void ioapic_send_eoi(uint8_t vector) {
+    if (!ioapic_mmio) return;
+    ioapic_write(IOAPIC_REG_ID, vector);
 }
 
 void apic_send_eoi(uint32_t vector) {
@@ -237,6 +295,13 @@ void ioapic_set_redirection(uint8_t irq, uint8_t vector, uint32_t dest_apic_id, 
 
     if (masked) {
         low |= IOAPIC_REDIR_DM_MASKED;
+    }
+    /* The 8254 holds OUT0 asserted for the whole terminal count period, and
+     * the I/O APIC drops a pending request as soon as the line falls, so an
+     * entry left on edge trigger loses the tick whenever delivery is not
+     * immediate. Everything else here is a genuine edge source. */
+    if (irq == 0) {
+        low |= IOAPIC_REDIR_DM_LEVEL;
     }
 
     ioapic_write(reg, low);
@@ -438,7 +503,21 @@ void ap_startup(void) {
      * neither a TSS nor any ring 3 descriptors. */
     gdt_reload();
     fpu_init();
-    ioapic_init();
+
+    /* The I/O APIC is a single shared chip, so its redirection table is set up
+     * once by the bootstrap processor. Re-running ioapic_init() from here
+     * re-masked every entry the BSP had opened (including the disk IRQs
+     * irq_install_handler() unmasked) and re-mapped the window, so the APs
+     * silently undid the interrupt setup. */
+
+    /* This processor's IA32_APIC_BASE comes out of INIT-SIPI-SIPI at its reset
+     * value, so the APIC has to be enabled here too or no interrupt routed to
+     * this CPU can be delivered. Bit 8 is the bootstrap-processor enable and
+     * means nothing on an AP; bit 11 is the global enable. Bit 10 (xAPIC) is
+     * left alone: it is read-only, and writing it raises #GP. */
+    uint64_t ap_msr = rdmsr(APIC_BASE_MSR);
+    ap_msr |= (1ULL << 11);
+    wrmsr(APIC_BASE_MSR, ap_msr);
 
     /* Enable this LAPIC, with the timer masked and the error vector in
      * place. An AP does not drive the timekeeping clock, so the local timer

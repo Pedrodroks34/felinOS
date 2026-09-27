@@ -7,32 +7,38 @@
 #include "paging.h"
 #include "vmm.h"
 #include "fs/vfs.h"
+#include "syscall.h"
 #include "lib/heap.h"
 #include "drivers/rtc.h"
 #include "sh/stream.h"
 
+/* Counted per assertion rather than per group: the PASS/FAIL lines are what
+ * the reader actually sees, so a summary that counts something else reads as
+ * if most of the output went uncounted. */
 #define TEST_ASSERT(cond, msg) \
     do { \
+        checks_run++; \
         if (!(cond)) { \
             kprintf("  FAIL: %s\n", msg); \
+            checks_failed++; \
             return 1; \
         } else { \
             kprintf("  PASS: %s\n", msg); \
+            checks_passed++; \
         } \
     } while (0)
 
-static int tests_run = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
+static int checks_run = 0;
+static int checks_passed = 0;
+static int checks_failed = 0;
+static int groups_run = 0;
+static int groups_failed = 0;
 
 static void run_test(const char *name, int (*test_fn)(void)) {
     kprintf("Testing %s...\n", name);
-    tests_run++;
-    int result = test_fn();
-    if (result == 0) {
-        tests_passed++;
-    } else {
-        tests_failed++;
+    groups_run++;
+    if (test_fn() != 0) {
+        groups_failed++;
     }
 }
 
@@ -60,30 +66,45 @@ int test_paging(void) {
     return 0;
 }
 
+/* Mount point for the VFS test: a scratch directory on the ramfs at /tmp. */
+#define TEST_MNT "/tmp/selftest"
+
+/* The first address past the user heap, where nothing else is mapped. */
+#define TEST_FIXED_ADDR (USER_HEAP_BASE + USER_HEAP_MAX)
+
 int test_vmm(void) {
     void *ptr = vmm_alloc(4096, VM_READ | VM_WRITE, "test-alloc");
     TEST_ASSERT(ptr != NULL, "Can allocate virtual memory");
     
     vmm_free(ptr);
     
-    ptr = vmm_alloc_at(0x1000000, 4096, VM_READ | VM_WRITE | VM_FIXED, "test-fixed");
-    TEST_ASSERT(ptr != NULL, "Can allocate at fixed address");
+    /* Ask for an address in the mmap window, above the user heap. 0x1000000 is
+     * inside the loaded program image, so it is not a free page and the request
+     * is refused for a reason that has nothing to do with VM_FIXED. What VM_FIXED
+     * is actually for is landing on the address you asked for, so check that. */
+    ptr = vmm_alloc_at(TEST_FIXED_ADDR, 4096, VM_READ | VM_WRITE | VM_FIXED, "test-fixed");
+    TEST_ASSERT(ptr == (void *)TEST_FIXED_ADDR, "Can allocate at fixed address");
     
     vmm_free(ptr);
     return 0;
 }
 
 int test_vfs(void) {
-    TEST_ASSERT(vfs_mount("ramfs", NULL, "/test") == 0, "Can mount ramfs");
+    /* A mount point has to be a directory that already exists, the same as
+     * mount(8) on a real system. It has to be created somewhere writable and
+     * disposable: creating it on / would write to the persistent gatofs image,
+     * and /tmp is already a ramfs, so nothing outside RAM is touched. */
+    vfs_mkdir(TEST_MNT);
+    TEST_ASSERT(vfs_mount("ramfs", NULL, TEST_MNT) == 0, "Can mount ramfs");
     
     struct vfs_file *f;
-    TEST_ASSERT(vfs_open("/test/testfile.txt", VFS_O_WRITE | VFS_O_CREATE, &f) == 0, "Can create file");
+    TEST_ASSERT(vfs_open(TEST_MNT "/testfile.txt", VFS_O_WRITE | VFS_O_CREATE, &f) == 0, "Can create file");
     
     const char *data = "Hello, VFS!";
     TEST_ASSERT(vfs_write(f, data, 12) == 12, "Can write to file");
     vfs_close(f);
     
-    TEST_ASSERT(vfs_open("/test/testfile.txt", VFS_O_READ, &f) == 0, "Can open file for reading");
+    TEST_ASSERT(vfs_open(TEST_MNT "/testfile.txt", VFS_O_READ, &f) == 0, "Can open file for reading");
     
     char buf[32];
     uint32_t n = vfs_read(f, buf, 32);
@@ -91,9 +112,12 @@ int test_vfs(void) {
     TEST_ASSERT(memcmp(buf, data, 12) == 0, "Read data matches");
     vfs_close(f);
     
-    TEST_ASSERT(vfs_unlink("/test/testfile.txt") == 0, "Can unlink file");
-    TEST_ASSERT(vfs_umount("/test") == 0, "Can unmount ramfs");
-    
+    TEST_ASSERT(vfs_unlink(TEST_MNT "/testfile.txt") == 0, "Can unlink file");
+    TEST_ASSERT(vfs_umount(TEST_MNT) == 0, "Can unmount ramfs");
+
+    /* Leave no trace, so a second selftest in the same boot starts clean. */
+    vfs_rmdir(TEST_MNT);
+
     return 0;
 }
 
@@ -173,11 +197,35 @@ void run_all_tests(void) {
     run_test("RTC", test_rtc);
     
     kprintf("\n=== Results ===\n");
-    kprintf("Total: %d  Passed: %d  Failed: %d\n", tests_run, tests_passed, tests_failed);
-    
-    if (tests_failed == 0) {
+    kprintf("Checks: %d  Passed: %d  Failed: %d\n", checks_run, checks_passed, checks_failed);
+    kprintf("Groups: %d  Failed: %d\n", groups_run, groups_failed);
+
+    if (checks_failed == 0) {
         kprintf("\nAll tests PASSED!\n");
     } else {
         kprintf("\nSome tests FAILED!\n");
     }
+}
+
+int cmd_selftest(int argc, char **argv, struct stream *in, struct stream *out) {
+    (void)argv;
+    (void)in;
+    (void)out;
+
+    if (argc > 1) {
+        kprintf("usage: selftest\n");
+        return 2;
+    }
+
+    /* Counters are file-scope statics, so a second selftest in the same boot
+     * would add up to the first one's totals. Reset them to keep the reported
+     * numbers about this run. */
+    checks_run = 0;
+    checks_passed = 0;
+    checks_failed = 0;
+    groups_run = 0;
+    groups_failed = 0;
+
+    run_all_tests();
+    return checks_failed == 0 ? 0 : 1;
 }

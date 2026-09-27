@@ -80,6 +80,7 @@ int cmd_ps(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_kill(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_renice(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_sched(int argc, char **argv, struct stream *in, struct stream *out);
+int cmd_top(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_fg(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_dmesg(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_whoami(int argc, char **argv, struct stream *in, struct stream *out);
@@ -91,6 +92,7 @@ int cmd_poweroff(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_halt(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_sleep(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_beep(int argc, char **argv, struct stream *in, struct stream *out);
+int cmd_tune(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_lscpu(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_smp(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_lsmem(int argc, char **argv, struct stream *in, struct stream *out);
@@ -137,6 +139,6 @@ int cmd_nano(int argc, char **argv, struct stream *in, struct stream *out);
 
 int cmd_simplecc(int argc, char **argv, struct stream *in, struct stream *out);
 
-int cmd_test(int argc, char **argv, struct stream *in, struct stream *out);
+int cmd_selftest(int argc, char **argv, struct stream *in, struct stream *out);
 
 #endif

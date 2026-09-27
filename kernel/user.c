@@ -250,6 +250,10 @@ static int load_elf(const uint8_t *d, uint32_t size, uint32_t *entry, int *is32)
     }
     uint32_t base = (uint32_t)lo & PAGE_MASK;
     uint32_t span = (uint32_t)hi - base;
+    /* Every PT_LOAD is mapped read+write+execute regardless of what its p_flags
+     * says. The program headers are collected and the segments copied above, so
+     * a two-segment image loads correctly, but a read-only .text is not
+     * enforced yet: see user/user.ld. */
     if (!vmm_alloc_at(base, span, VM_READ | VM_WRITE | VM_EXEC | VM_USER, "user-image")) {
         return -1;
     }
@@ -1656,15 +1660,43 @@ static int sys_clock_gettime(struct regs *r) {
 
 static int sys_clock_settime(struct regs *r) {
     struct timespec ts;
+    struct rtc_time t;
 
+    /* Only the realtime clock is settable; the PIT-backed monotonic clock has
+     * no meaning for a wall-clock write. */
+    if (arg1(r) != CLOCK_REALTIME) {
+        return -22;   /* -EINVAL */
+    }
     if (!uptr_ok(arg2(r), sizeof(ts))) {
         return -1;
     }
     memcpy(&ts, (void *)(uintptr_t)arg2(r), sizeof(ts));
-    /* Writing the CMOS clock is not wired up yet; the PIT-backed monotonic
-     * clock is the only one Gato keeps. */
-    (void)ts;
-    return -38;   /* -ENOSYS */
+    if (ts.tv_nsec >= 1000000000u) {
+        return -22;
+    }
+
+    unix_to_time(ts.tv_sec, &t);
+    return rtc_write(&t) == 0 ? 0 : -22;
+}
+
+static int sys_settimeofday(struct regs *r) {
+    struct timeval tv;
+    struct rtc_time t;
+
+    /* Linux accepts a NULL first argument as a no-op. */
+    if (!arg1(r)) {
+        return 0;
+    }
+    if (!uptr_ok(arg1(r), sizeof(tv))) {
+        return -1;
+    }
+    memcpy(&tv, (void *)(uintptr_t)arg1(r), sizeof(tv));
+    if (tv.tv_usec >= 1000000u) {
+        return -22;
+    }
+
+    unix_to_time(tv.tv_sec, &t);
+    return rtc_write(&t) == 0 ? 0 : -22;
 }
 
 static int sys_times(struct regs *r) {
@@ -1828,6 +1860,7 @@ void syscall_dispatch(struct regs *r) {
     case SYS_SETRLIMIT: ret = sys_setrlimit(r); break;
     case SYS_CLOCK_GETTIME: ret = sys_clock_gettime(r); break;
     case SYS_CLOCK_SETTIME: ret = sys_clock_settime(r); break;
+    case SYS_SETTIMEOFDAY: ret = sys_settimeofday(r); break;
     case SYS_FORK:    ret = sys_fork(r); break;
     case SYS_EXECVE:  ret = sys_execve(r); break;
     case SYS_SIGACTION:   ret = sys_sigaction(r); break;

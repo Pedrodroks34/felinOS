@@ -13,6 +13,7 @@ struct rtc_time {
 };
 
 void rtc_read(struct rtc_time *t);
+int rtc_write(const struct rtc_time *t);
 uint32_t rtc_unix(void);
 void unix_to_time(uint32_t stamp, struct rtc_time *t);
 int day_of_week(int year, int month, int day);

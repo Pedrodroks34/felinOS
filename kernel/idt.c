@@ -146,7 +146,16 @@ void irq_install_handler(int irq, irq_handler_t handler) {
         return;
     }
     irq_routines[irq] = handler;
-    pic_clear_mask(irq);
+    if (apic_is_present()) {
+        /* With the APIC enabled the legacy 8259 no longer reaches the CPU: the
+         * line is delivered through the matching I/O APIC redirection entry.
+         * Unmasking only the PIC (as this function used to) installed a handler
+         * that could never be called, so both controllers are left masked and
+         * the I/O APIC is the only delivery path. */
+        ioapic_unmask_irq((uint8_t)irq);
+    } else {
+        pic_clear_mask(irq);
+    }
 }
 
 void irq_uninstall_handler(int irq) {
@@ -154,7 +163,11 @@ void irq_uninstall_handler(int irq) {
         return;
     }
     irq_routines[irq] = NULL;
-    pic_set_mask(irq);
+    if (apic_is_present()) {
+        ioapic_mask_irq((uint8_t)irq);
+    } else {
+        pic_set_mask(irq);
+    }
 }
 
 /* Defined further down, next to the rest of the APIC glue. */
@@ -236,7 +249,18 @@ void irq_handler(struct regs *r) {
         if (handler) {
             handler(r);
         }
-        pic_send_eoi(irq);
+        /* Clear the interrupt at the controller that delivered it. In APIC
+         * mode the Local APIC's in-service bit for this vector is what stops
+         * further interrupts; the legacy 8259 is off the delivery path and its
+         * EOI is not only useless but comes too late -- with it, the first
+         * interrupt latched the vector forever. apic_send_eoi() takes the
+         * vector, not the IRQ number. */
+        if (apic_is_present()) {
+            apic_send_eoi((uint32_t)r->int_no);
+            ioapic_send_eoi((uint8_t)r->int_no);
+        } else {
+            pic_send_eoi(irq);
+        }
         irq_exit();
     }
     sched_irq_return(r);
