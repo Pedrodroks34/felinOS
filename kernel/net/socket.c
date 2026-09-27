@@ -157,8 +157,11 @@ struct vfs_file *socket_accept(struct vfs_file *f, struct sockaddr_in *addr_out)
 }
 
 static int sockfs_read(struct vfs_file *f, void *buf, uint32_t len) {
-    struct socket *sock = (struct socket *)f->priv;
+    struct socket *sock = f ? (struct socket *)f->priv : NULL;
 
+    if (!sock) {
+        return -1;
+    }
     if (sock->udp) {
         return udp_recvfrom(sock->udp, buf, len, NULL, NULL, SOCK_TIMEOUT_INFINITE);
     }
@@ -166,8 +169,11 @@ static int sockfs_read(struct vfs_file *f, void *buf, uint32_t len) {
 }
 
 static int sockfs_write(struct vfs_file *f, const void *buf, uint32_t len) {
-    struct socket *sock = (struct socket *)f->priv;
+    struct socket *sock = f ? (struct socket *)f->priv : NULL;
 
+    if (!sock) {
+        return -1;
+    }
     if (sock->udp) {
         uint32_t ip;
         uint16_t port;
@@ -180,8 +186,11 @@ static int sockfs_write(struct vfs_file *f, const void *buf, uint32_t len) {
 }
 
 static void sockfs_close(struct vfs_file *f) {
-    struct socket *sock = (struct socket *)f->priv;
+    struct socket *sock = f ? (struct socket *)f->priv : NULL;
 
+    if (!sock) {
+        return;
+    }
     if (sock->udp) {
         udp_close(sock->udp);
     }
@@ -190,4 +199,79 @@ static void sockfs_close(struct vfs_file *f) {
         tcp_release(sock->tcp);
     }
     kfree(sock);
+}
+
+int socket_type(const struct vfs_file *f) {
+    const struct socket *sock = f ? (const struct socket *)f->priv : NULL;
+
+    return sock ? sock->type : 0;
+}
+
+uint16_t socket_local_port(const struct vfs_file *f) {
+    const struct socket *sock = f ? (const struct socket *)f->priv : NULL;
+
+    if (!sock) {
+        return 0;
+    }
+    return sock->udp ? udp_local_port(sock->udp) : tcp_local_port(sock->tcp);
+}
+
+int socket_send(struct vfs_file *f, const void *buf, uint32_t len, int flags) {
+    (void)flags;
+    return sockfs_write(f, buf, len);
+}
+
+int socket_recv(struct vfs_file *f, void *buf, uint32_t len, int flags) {
+    (void)flags;
+    return sockfs_read(f, buf, len);
+}
+
+int socket_sendto(struct vfs_file *f, const void *buf, uint32_t len, int flags,
+                  const struct sockaddr_in *addr) {
+    (void)flags;
+    struct socket *sock = f ? (struct socket *)f->priv : NULL;
+
+    if (!sock || !addr) {
+        return -1;
+    }
+    if (sock->tcp) {
+        /* sendto() on a stream socket is just send() to the connected peer. */
+        return tcp_send(sock->tcp, buf, len);
+    }
+    return udp_sendto(sock->udp, net_ntohl(addr->sin_addr.s_addr),
+                      net_ntohs(addr->sin_port), buf, len) == 0 ? (int)len : -1;
+}
+
+int socket_recvfrom(struct vfs_file *f, void *buf, uint32_t len, int flags,
+                    struct sockaddr_in *addr_out) {
+    (void)flags;
+    struct socket *sock = f ? (struct socket *)f->priv : NULL;
+
+    if (!sock) {
+        return -1;
+    }
+    if (sock->tcp) {
+        int n = tcp_recv(sock->tcp, buf, len, SOCK_TIMEOUT_INFINITE);
+        if (n >= 0 && addr_out) {
+            uint32_t ip = 0;
+            uint16_t port = 0;
+            if (tcp_remote(sock->tcp, &ip, &port)) {
+                memset(addr_out, 0, sizeof(*addr_out));
+                addr_out->sin_family = AF_INET;
+                addr_out->sin_port = net_htons(port);
+                addr_out->sin_addr.s_addr = net_htonl(ip);
+            }
+        }
+        return n;
+    }
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int n = udp_recvfrom(sock->udp, buf, len, &ip, &port, SOCK_TIMEOUT_INFINITE);
+    if (n >= 0 && addr_out) {
+        memset(addr_out, 0, sizeof(*addr_out));
+        addr_out->sin_family = AF_INET;
+        addr_out->sin_port = net_htons(port);
+        addr_out->sin_addr.s_addr = net_htonl(ip);
+    }
+    return n;
 }

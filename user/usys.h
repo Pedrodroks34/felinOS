@@ -10,11 +10,44 @@ static inline sysint sys3(sysint n, sysint a, sysint b, sysint c) {
     __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory");
     return r;
 }
+static inline sysint sys4(sysint n, sysint a, sysint b, sysint c, sysint d) {
+    sysint r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d) : "memory");
+    return r;
+}
+static inline sysint sys5(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e) {
+    sysint r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(e) : "memory");
+    return r;
+}
+static inline sysint sys6(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e, sysint f) {
+    sysint r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(e), "D"(f) : "memory");
+    return r;
+}
 #else
 typedef int sysint;
 static inline sysint sys3(sysint n, sysint a, sysint b, sysint c) {
     sysint r;
     __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "b"(a), "c"(b), "d"(c) : "memory");
+    return r;
+}
+static inline sysint sys4(sysint n, sysint a, sysint b, sysint c, sysint d) {
+    sysint r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "b"(a), "c"(b), "d"(c), "S"(d) : "memory");
+    return r;
+}
+static inline sysint sys5(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e) {
+    sysint r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e) : "memory");
+    return r;
+}
+static inline sysint sys6(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e, sysint f) {
+    sysint r;
+    __asm__ volatile ("int $0x80"
+                      : "=a"(r)
+                      : "a"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e), "R"(f)
+                      : "memory");
     return r;
 }
 #endif
@@ -44,7 +77,28 @@ static inline int dup(int fd)             { return sys3(SYS_DUP, fd, 0, 0); }
 static inline int dup2(int oldfd, int newfd) { return sys3(SYS_DUP2, oldfd, newfd, 0); }
 static inline int pipe(int fds[2])        { return sys3(SYS_PIPE, (sysint)fds, 0, 0); }
 static inline int time(void)              { return sys3(SYS_TIME, 0, 0, 0); }
-static inline int munmap(void *addr)      { return sys3(SYS_MUNMAP, (sysint)addr, 0, 0); }
+static inline int munmap(void *addr, unsigned len) { return sys3(SYS_MUNMAP, (sysint)addr, len, 0); }
+static inline void *mmap(void *addr, unsigned len, int prot, int flags, int fd, long off) {
+    return (void *)sys6(SYS_MMAP, (sysint)addr, len, prot, flags, fd, off);
+}
+static inline int mprotect(void *addr, unsigned len, int prot) {
+    return sys3(SYS_MPROTECT, (sysint)addr, len, prot);
+}
+static inline int madvise(void *addr, unsigned len, int advice) {
+    return sys3(SYS_MADVISE, (sysint)addr, len, advice);
+}
+static inline int msync(void *addr, unsigned len, int flags) {
+    return sys3(SYS_MSYNC, (sysint)addr, len, flags);
+}
+static inline int truncate(const char *path, unsigned len) { return sys3(SYS_TRUNCATE, (sysint)path, len, 0); }
+static inline int ftruncate(int fd, unsigned len)         { return sys3(SYS_FTRUNCATE, fd, len, 0); }
+static inline int rmdir(const char *path)                  { return sys3(SYS_RMDIR, (sysint)path, 0, 0); }
+static inline int gettimeofday(struct timeval *tv)         { return sys3(SYS_GETTIMEOFDAY, (sysint)tv, 0, 0); }
+static inline int clock_gettime(int clk, struct timespec *ts) {
+    return sys3(SYS_CLOCK_GETTIME, clk, (sysint)ts, 0);
+}
+static inline int getrlimit(int res, unsigned long *lim)  { return sys3(SYS_GETRLIMIT, res, (sysint)lim, 0); }
+static inline int setrlimit(int res, const unsigned long *lim) { return sys3(SYS_SETRLIMIT, res, (sysint)lim, 0); }
 static inline int fork(void)              { return sys3(SYS_FORK, 0, 0, 0); }
 static inline int execve(const char *p, char *const *argv, char *const *envp) {
     (void)envp;

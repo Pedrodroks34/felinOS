@@ -57,7 +57,6 @@ static int kernel_getchar(void) {
 }
 
 static void next_char(void) { input_ptr++; }
-static char peek_char(void) { return *input_ptr; }
 static int is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 static int is_digit(char c) { return c >= '0' && c <= '9'; }
 static int is_alnum(char c) { return is_alpha(c) || is_digit(c); }
@@ -248,8 +247,6 @@ static void gen_expr(void) {
             op == TK_EQ || op == TK_NEQ || op == TK_LT || op == TK_LE || op == TK_GT || op == TK_GE) {
             token_pos++;
             gen_expr();
-            uint32_t right = code[code_size - 4] | (code[code_size - 3] << 8) | 
-                             (code[code_size - 2] << 16) | (code[code_size - 1] << 24);
             code_size -= 4;
             emit_byte(0x50); // push eax
             switch (op) {
@@ -263,6 +260,9 @@ static void gen_expr(void) {
                 case TK_LE: emit_byte(0x39); emit_byte(0x44); emit_byte(0x24); emit_byte(0x00); emit_byte(0x0F); emit_byte(0x9E); emit_byte(0xC0); break;
                 case TK_GT: emit_byte(0x39); emit_byte(0x44); emit_byte(0x24); emit_byte(0x00); emit_byte(0x0F); emit_byte(0x9F); emit_byte(0xC0); break;
                 case TK_GE: emit_byte(0x39); emit_byte(0x44); emit_byte(0x24); emit_byte(0x00); emit_byte(0x0F); emit_byte(0x9D); emit_byte(0xC0); break;
+                /* The guard above admits nothing else, so nothing else can
+                 * reach here; the case exists to tell the compiler so. */
+                default: break;
             }
             emit_byte(0x83); emit_byte(0xC4); emit_byte(0x04); // add esp, 4
         } else break;

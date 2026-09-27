@@ -40,6 +40,13 @@
 #define VFS_ENOSYS       (-14)
 #define VFS_ENOMEM       (-15)
 #define VFS_EFBIG        (-16)
+#define VFS_EACCES       (-17)
+#define VFS_EFAULT       (-18)
+
+/* fcntl() commands Gato understands. */
+#define F_GETFL   3
+#define F_SETFL   4
+#define F_SETSIZE 5
 
 struct vfs_stat {
     uint8_t type;
@@ -104,6 +111,10 @@ struct fs_ops {
     int (*fchown)(struct vfs_file *f, uint16_t uid, uint16_t gid);
     int (*lchown)(struct vfs_mount *m, const char *path, uint16_t uid, uint16_t gid);
     int (*readdir_fd)(struct vfs_file *f, char *buf, uint32_t count);
+    /* Resizes an open file to `size`, zero-filling a gap and releasing
+     * whatever the tail occupied. Optional: NULL means "not supported here",
+     * which vfs_truncate() reports as an error. */
+    int (*truncate)(struct vfs_file *f, uint64_t size);
 };
 
 struct vfs_mount {
@@ -168,6 +179,8 @@ int vfs_touch(const char *path);
 int vfs_statfs(const char *path, struct vfs_statfs *sf);
 int vfs_sync(void);
 int vfs_sync_file(struct vfs_file *f);
+int vfs_ftruncate(struct vfs_file *f, uint64_t size);
+int vfs_truncate(const char *path, uint64_t size);
 int vfs_fcntl(struct vfs_file *f, int cmd, uint32_t arg);
 int vfs_ioctl(struct vfs_file *f, uint32_t request, uint32_t arg);
 int vfs_getcwd_buf(char *buf, uint32_t size);

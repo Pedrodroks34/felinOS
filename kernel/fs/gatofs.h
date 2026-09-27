@@ -80,6 +80,7 @@ int gatofs_touch(const char *path);
 int gatofs_open(const char *path, int flags);   /* fd >= 0 or error */
 int gatofs_read(int fd, void *buf, uint32_t len);
 int gatofs_write(int fd, const void *buf, uint32_t len);
+int gatofs_truncate(int fd, uint32_t size);
 int gatofs_seek(int fd, uint32_t pos);
 uint32_t gatofs_tell(int fd);
 uint32_t gatofs_size(int fd);

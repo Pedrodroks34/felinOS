@@ -298,6 +298,10 @@ struct task *task_new(const char *name, void (*entry)(void *), void *arg,
     t->nice = 0;
     t->uid = current->uid;
     t->gid = current->gid;
+    t->euid = current->euid;
+    t->egid = current->egid;
+    t->suid = current->suid;
+    t->sgid = current->sgid;
     t->entry = entry;
     t->arg = arg;
     t->space = space ? space : vmm_kernel_space();

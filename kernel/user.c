@@ -15,6 +15,9 @@
 #include "lib/format.h"
 #include "lib/heap.h"
 #include "net/socket.h"
+#include "net/net.h"
+#include "net/netif.h"
+#include "net/dns.h"
 
 extern void user_jump(uint64_t entry, uint64_t user_sp, int is32) __attribute__((noreturn));
 extern void fork_trampoline(struct regs *r) __attribute__((noreturn));
@@ -75,6 +78,7 @@ static struct uproc *cur_proc(void) {
 
 #define PROG_DECL(n) extern const uint8_t prog_##n##_start[], prog_##n##_end[];
 PROG_DECL(hello) PROG_DECL(cat) PROG_DECL(crash) PROG_DECL(spin) PROG_DECL(count) PROG_DECL(launch) PROG_DECL(hello32)
+PROG_DECL(nc) PROG_DECL(wget) PROG_DECL(mmtest)
 
 static const struct { const char *name; const uint8_t *s, *e; } progs[] = {
     { "hello", prog_hello_start, prog_hello_end },
@@ -84,6 +88,9 @@ static const struct { const char *name; const uint8_t *s, *e; } progs[] = {
     { "count", prog_count_start, prog_count_end },
     { "launch", prog_launch_start, prog_launch_end },
     { "hello32", prog_hello32_start, prog_hello32_end },
+    { "nc",    prog_nc_start,    prog_nc_end },
+    { "wget",  prog_wget_start,  prog_wget_end },
+    { "mmtest", prog_mmtest_start, prog_mmtest_end },
 };
 
 static int same_contents(const char *path, const uint8_t *data, uint32_t len) {
@@ -538,6 +545,23 @@ static uint32_t arg1(struct regs *r) { return (uint32_t)(cur_proc()->is32 ? r->r
 static uint32_t arg2(struct regs *r) { return (uint32_t)(cur_proc()->is32 ? r->rcx : r->rsi); }
 static uint32_t arg3(struct regs *r) { return (uint32_t)r->rdx; }
 
+/* The 64-bit System V order continues with rcx, r8, r9 for the 4th, 5th and
+ * 6th argument. A 32-bit program leaves those on its own stack: the CPU saves
+ * the pre-interrupt rsp in the frame, so r->rsp is the stack the syscall was
+ * made from and the arguments sit right above the return address. */
+static uint32_t stack_arg(struct regs *r, int index) {
+    uint32_t addr = (uint32_t)r->rsp + 4 + (uint32_t)(index - 4) * 4;
+
+    if (!uptr_ok(addr, 4)) {
+        return 0;
+    }
+    return *(const uint32_t *)(uintptr_t)addr;
+}
+
+static uint32_t arg4(struct regs *r) { return cur_proc()->is32 ? stack_arg(r, 4) : (uint32_t)r->rcx; }
+static uint32_t arg5(struct regs *r) { return cur_proc()->is32 ? stack_arg(r, 5) : (uint32_t)r->r8; }
+static uint32_t arg6(struct regs *r) { return cur_proc()->is32 ? stack_arg(r, 6) : (uint32_t)r->r9; }
+
 static int sys_write(struct regs *r) {
     struct uproc *p = cur_proc();
     int fd = (int)arg1(r);
@@ -976,15 +1000,6 @@ static int sys_pipe(struct regs *r) {
     return 0;
 }
 
-static int sys_munmap(struct regs *r) {
-    uint32_t addr = arg1(r);
-
-    if (addr < USER_BASE || addr >= USER_STACK_TOP) {
-        return -1;
-    }
-    return vmm_free((void *)(uintptr_t)addr);
-}
-
 static void fork_task_main(void *arg) {
     struct regs local = *(struct regs *)arg;
 
@@ -1294,6 +1309,470 @@ static int sys_accept(struct regs *r) {
     return slot;
 }
 
+/* Common prologue for the send/recv family: validates the descriptor and the
+ * user buffer, and returns the socket it names. */
+static struct vfs_file *sock_arg(struct regs *r, int fd, uint32_t buf, uint32_t len) {
+    struct uproc *p = cur_proc();
+
+    if (len && !uptr_ok(buf, len)) {
+        return NULL;
+    }
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd] || !socket_is_socket(p->fds[fd])) {
+        return NULL;
+    }
+    return p->fds[fd];
+}
+
+static int copy_sockaddr_in(struct regs *r, uint32_t arg, struct sockaddr_in *out) {
+    if (arg == 0) {
+        return 0;
+    }
+    if (!uptr_ok(arg, sizeof(struct sockaddr_in))) {
+        return -1;
+    }
+    memcpy(out, (void *)(uintptr_t)arg, sizeof(struct sockaddr_in));
+    if (out->sin_family != AF_INET) {
+        return -1;
+    }
+    return 0;
+}
+
+static int sys_send(struct regs *r) {
+    struct vfs_file *f = sock_arg(r, (int)arg1(r), arg2(r), arg3(r));
+
+    if (!f) {
+        return -1;
+    }
+    return socket_send(f, (const void *)(uintptr_t)arg2(r), arg3(r), (int)arg4(r));
+}
+
+static int sys_recv(struct regs *r) {
+    struct vfs_file *f = sock_arg(r, (int)arg1(r), arg2(r), arg3(r));
+
+    if (!f) {
+        return -1;
+    }
+    return socket_recv(f, (void *)(uintptr_t)arg2(r), arg3(r), (int)arg4(r));
+}
+
+static int sys_sendto(struct regs *r) {
+    struct sockaddr_in addr;
+    struct vfs_file *f;
+
+    if (copy_sockaddr_in(r, arg4(r), &addr) < 0) {
+        return -1;
+    }
+    f = sock_arg(r, (int)arg1(r), arg2(r), arg3(r));
+    if (!f) {
+        return -1;
+    }
+    return socket_sendto(f, (const void *)(uintptr_t)arg2(r), arg3(r), (int)arg5(r), &addr);
+}
+
+static int sys_recvfrom(struct regs *r) {
+    struct sockaddr_in addr;
+    struct vfs_file *f = sock_arg(r, (int)arg1(r), arg2(r), arg3(r));
+
+    if (!f) {
+        return -1;
+    }
+    int n = socket_recvfrom(f, (void *)(uintptr_t)arg2(r), arg3(r), (int)arg5(r), &addr);
+    if (n < 0) {
+        return n;
+    }
+    uint32_t addrp = arg4(r);
+    if (addrp && uptr_ok(addrp, sizeof(addr))) {
+        memcpy((void *)(uintptr_t)addrp, &addr, sizeof(addr));
+    }
+    return n;
+}
+
+static int sys_getsockname(struct regs *r) {
+    struct uproc *p = cur_proc();
+    int fd = (int)arg1(r);
+    uint32_t addrp = arg2(r);
+
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd] || !socket_is_socket(p->fds[fd])) {
+        return -1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = net_htons(socket_local_port(p->fds[fd]));
+    if (addrp && uptr_ok(addrp, sizeof(addr))) {
+        memcpy((void *)(uintptr_t)addrp, &addr, sizeof(addr));
+    }
+    return (int)sizeof(addr);
+}
+
+static int sys_setsockopt(struct regs *r) {
+    struct uproc *p = cur_proc();
+    int fd = (int)arg1(r);
+    uint32_t val = arg4(r);
+    uint32_t vlen = arg5(r);
+
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd] || !socket_is_socket(p->fds[fd])) {
+        return -1;
+    }
+    if (val && !uptr_ok(val, vlen)) {
+        return -1;
+    }
+    /* No option is configurable yet, but accepting the call keeps programs
+     * that set SO_REUSEADDR unconditionally working. */
+    return 0;
+}
+
+static int sys_gethostbyname(struct regs *r) {
+    struct netif *nif = netif_default();
+    char host[256];
+    uint32_t src = arg1(r);
+    uint32_t dst = arg2(r);
+    uint32_t ip = 0;
+
+    if (!nif || !nif->up || nif->dns_server == 0) {
+        return -1;
+    }
+    if (!uptr_ok(src, 1) || !uptr_ok(dst, 4)) {
+        return -1;
+    }
+    if (ustr_copy(host, src, sizeof(host)) < 0) {
+        return -1;
+    }
+    if (dns_resolve(nif->dns_server, host, 300, &ip) != 0) {
+        return -1;
+    }
+    *(uint32_t *)(uintptr_t)dst = net_htonl(ip);
+    return 0;
+}
+
+static int fill_ifinfo(struct netif *nif, struct k_ifinfo *out) {
+    memset(out, 0, sizeof(*out));
+    out->ip = net_htonl(nif->ip);
+    out->netmask = net_htonl(nif->netmask);
+    out->gateway = net_htonl(nif->gateway);
+    out->dns_server = net_htonl(nif->dns_server);
+    memcpy(out->mac, nif->mac, 6);
+    out->up = (uint8_t)nif->up;
+    out->dhcp_bound = (uint8_t)nif->dhcp_bound;
+    memcpy(out->driver, nif->driver_name, sizeof(out->driver) - 1);
+    out->rx_packets = nif->rx_packets;
+    out->tx_packets = nif->tx_packets;
+    out->rx_bytes = nif->rx_bytes;
+    out->tx_bytes = nif->tx_bytes;
+    out->rx_errors = nif->rx_errors;
+    out->tx_errors = nif->tx_errors;
+    return 0;
+}
+
+static int sys_getifaddr(struct regs *r) {
+    struct netif *nif = netif_default();
+    struct k_ifinfo info;
+    uint32_t dst = arg1(r);
+
+    if (!nif || !uptr_ok(dst, sizeof(info))) {
+        return -1;
+    }
+    fill_ifinfo(nif, &info);
+    memcpy((void *)(uintptr_t)dst, &info, sizeof(info));
+    return 0;
+}
+
+static int sys_getifaddrs(struct regs *r) {
+    struct netif *nif = netif_default();
+    uint32_t dst = arg1(r);
+    int max = (int)arg2(r);
+
+    /* Gato has a single interface, so this is the one entry or nothing. */
+    if (!nif || max < 1 || !uptr_ok(dst, sizeof(struct k_ifinfo))) {
+        return 0;
+    }
+    struct k_ifinfo info;
+    fill_ifinfo(nif, &info);
+    memcpy((void *)(uintptr_t)dst, &info, sizeof(info));
+    return 1;
+}
+
+/* ---------- memory management ---------- */
+
+/* mmap() may only hand out user addresses, and never over the image, the
+ * program heap or the stack that the process already owns. */
+#define MMAP_WINDOW_LO (USER_HEAP_BASE + USER_HEAP_MAX)
+#define MMAP_WINDOW_HI (USER_STACK_TOP - USER_STACK_SIZE)
+#define MMAP_MAX_SIZE  (64u * 1024u * 1024u)
+
+static int sys_mmap(struct regs *r) {
+    uint32_t addr = arg1(r);
+    uint32_t len = arg2(r);
+    uint32_t prot = arg3(r);
+    uint32_t flags = arg4(r);
+    uint32_t fd = arg5(r);
+    uint32_t off = arg6(r);
+    (void)off;
+
+    if (!len || len > MMAP_MAX_SIZE) {
+        return -1;
+    }
+    len = (len + PAGE_SIZE - 1) & PAGE_MASK;
+
+    uint32_t vflags = VM_USER | VM_DEMAND;
+    if (prot & PROT_WRITE) vflags |= VM_WRITE;
+    if (prot & PROT_READ)  vflags |= VM_READ;
+    if (prot & PROT_EXEC)  vflags |= VM_EXEC;
+    if (flags & MAP_SHARED) vflags |= VM_SHARED;
+
+    /* A file-backed mapping would need page cache integration; only the
+     * anonymous case is wired up, so reject the rest instead of silently
+     * returning zero-filled memory the program expects to hold data. */
+    if (!(flags & MAP_ANONYMOUS) || (flags & MAP_SHARED) || fd != (uint32_t)-1) {
+        return -1;
+    }
+
+    void *p;
+    if (flags & MAP_FIXED) {
+        if (!addr || (addr & PAGE_OFFSET(0))) {
+            return -1;
+        }
+        if (addr < USER_BASE || addr + len > USER_STACK_TOP) {
+            return -1;
+        }
+        /* MAP_FIXED replaces whatever was there, as on Linux. */
+        vmm_free((void *)(uintptr_t)addr);
+        p = vmm_alloc_at(addr, len, vflags, "user-map");
+    } else {
+        p = vmm_alloc_range(MMAP_WINDOW_LO, MMAP_WINDOW_HI, len, vflags, "user-map");
+    }
+    if (!p) {
+        return -1;
+    }
+    return (int)(uintptr_t)p;
+}
+
+static int sys_munmap(struct regs *r) {
+    uint32_t addr = arg1(r);
+    uint32_t len = arg2(r);
+
+    if (!len || len > MMAP_MAX_SIZE) {
+        return -1;
+    }
+    len = (len + PAGE_SIZE - 1) & PAGE_MASK;
+    if (addr < USER_BASE || (addr & PAGE_OFFSET(0)) || addr + len > USER_STACK_TOP) {
+        return -1;
+    }
+    /* Refuse to unmap a range that is not a mapping of this process: the
+     * image, the brk heap and the stack are not ours to drop. */
+    if (addr < MMAP_WINDOW_LO || addr + len > MMAP_WINDOW_HI) {
+        return -1;
+    }
+    return vmm_free((void *)(uintptr_t)addr) < 0 ? -1 : 0;
+}
+
+static int sys_mprotect(struct regs *r) {
+    uint32_t addr = arg1(r);
+    uint32_t len = arg2(r);
+    uint32_t prot = arg3(r);
+
+    if (!len || len > MMAP_MAX_SIZE) {
+        return -1;
+    }
+    len = (len + PAGE_SIZE - 1) & PAGE_MASK;
+    if ((addr & PAGE_OFFSET(0)) || addr < USER_BASE || addr + len > USER_STACK_TOP) {
+        return -1;
+    }
+    if (addr < MMAP_WINDOW_LO || addr + len > MMAP_WINDOW_HI) {
+        return -1;
+    }
+    uint32_t add = 0, clear = 0;
+    if (prot & PROT_WRITE) add |= VM_WRITE;  else clear |= VM_WRITE;
+    if (prot & PROT_READ)  add |= VM_READ;   else clear |= VM_READ;
+    if (prot & PROT_EXEC)  add |= VM_EXEC;   else clear |= VM_EXEC;
+    return vmm_protect_region(addr, len, add, clear) < 0 ? -1 : 0;
+}
+
+static int sys_madvise(struct regs *r) {
+    uint32_t addr = arg1(r);
+    uint32_t len = arg2(r);
+    int advice = (int)arg3(r);
+
+    if (!len || len > MMAP_MAX_SIZE || (addr & PAGE_OFFSET(0))) {
+        return -1;
+    }
+    len = (len + PAGE_SIZE - 1) & PAGE_MASK;
+    if (addr < MMAP_WINDOW_LO || addr + len > MMAP_WINDOW_HI) {
+        return -1;
+    }
+    switch (advice) {
+    case MADV_DONTNEED:
+    case MADV_FREE:
+        /* Both mean "the contents may be discarded"; for a private anonymous
+         * mapping that is simply releasing the resident pages. */
+        vmm_release(addr, len);
+        return 0;
+    case MADV_NORMAL:
+    case MADV_RANDOM:
+    case MADV_SEQUENTIAL:
+    case MADV_WILLNEED:
+        return 0;
+    default:
+        return -22;   /* -EINVAL */
+    }
+}
+
+static int sys_msync(struct regs *r) {
+    /* Every filesystem Gato mounts writes through to the device already, so
+     * there is nothing buffered to push out. */
+    return 0;
+}
+
+/* ---------- time ---------- */
+
+static int copy_timespec(uint32_t addr, uint32_t sec, uint32_t nsec) {
+    if (!addr) {
+        return 0;
+    }
+    if (!uptr_ok(addr, sizeof(struct timespec))) {
+        return -1;
+    }
+    struct timespec ts;
+    ts.tv_sec = sec;
+    ts.tv_nsec = nsec;
+    memcpy((void *)(uintptr_t)addr, &ts, sizeof(ts));
+    return 0;
+}
+
+static int sys_clock_gettime(struct regs *r) {
+    int clk = (int)arg1(r);
+    uint32_t ms = pit_uptime_ms();
+
+    if (copy_timespec(arg2(r), ms / 1000, (ms % 1000) * 1000000) < 0) {
+        return -1;
+    }
+    /* Only the clocks that map onto the PIT tick are meaningful here. */
+    if (clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC && clk != CLOCK_MONOTONIC_RAW &&
+        clk != CLOCK_BOOTTIME && clk != CLOCK_PROCESS_CPUTIME_ID) {
+        return -38;   /* -ENOSYS */
+    }
+    return 0;
+}
+
+static int sys_clock_settime(struct regs *r) {
+    struct timespec ts;
+
+    if (!uptr_ok(arg2(r), sizeof(ts))) {
+        return -1;
+    }
+    memcpy(&ts, (void *)(uintptr_t)arg2(r), sizeof(ts));
+    /* Writing the CMOS clock is not wired up yet; the PIT-backed monotonic
+     * clock is the only one Gato keeps. */
+    (void)ts;
+    return -38;   /* -ENOSYS */
+}
+
+static int sys_times(struct regs *r) {
+    uint32_t ticks = sched_current()->cpu_ticks;
+    struct { long utime; long stime; long cutime; long cstime; } tms;
+
+    tms.utime = ticks;
+    tms.stime = 0;
+    tms.cutime = 0;
+    tms.cstime = 0;
+    if (arg1(r) && uptr_ok(arg1(r), sizeof(tms))) {
+        memcpy((void *)(uintptr_t)arg1(r), &tms, sizeof(tms));
+    }
+    return (int)ticks;
+}
+
+static int sys_getrusage(struct regs *r) {
+    struct task *t = sched_current();
+    uint32_t p = arg2(r);
+    /* struct rusage as the kernel defines it, minus the unused long padding. */
+    struct { uint32_t utime, stime, maxrss, ixrss, idrss, isrss;
+             uint32_t minflt, majflt, nswap, inblock, oublock, msgsnd, msgrcv,
+             nsignals, nvcsw, nivcsw; } ru;
+
+    memset(&ru, 0, sizeof(ru));
+    ru.utime = t->cpu_ticks;
+    ru.maxrss = paging_mapped_mb() / 1024;   /* peak resident set, in KB */
+    ru.minflt = paging_mapped_pages();
+    ru.nvcsw = t->switches;
+    if (p && uptr_ok(p, sizeof(ru))) {
+        memcpy((void *)(uintptr_t)p, &ru, sizeof(ru));
+    }
+    return 0;
+}
+
+/* ---------- resource limits ---------- */
+
+static int sys_getrlimit(struct regs *r) {
+    uint32_t res = arg1(r);
+    uint32_t p = arg2(r);
+
+    if (!p || !uptr_ok(p, 8)) {
+        return -1;
+    }
+    struct { uint64_t cur; uint64_t max; } lim;
+
+    switch (res) {
+    case RLIMIT_NOFILE:      lim.cur = MAX_FDS;   lim.max = MAX_FDS;   break;
+    case RLIMIT_STACK:       lim.cur = USER_STACK_SIZE; lim.max = USER_STACK_SIZE; break;
+    case RLIMIT_NPROC:       lim.cur = SCHED_MAX_TASKS; lim.max = SCHED_MAX_TASKS; break;
+    case RLIMIT_AS:
+    case RLIMIT_DATA:        lim.cur = USER_HEAP_MAX; lim.max = USER_HEAP_MAX; break;
+    case RLIMIT_CORE:        lim.cur = 0;         lim.max = 0;         break;
+    default:                 return -38;   /* -ENOSYS */
+    }
+    memcpy((void *)(uintptr_t)p, &lim, sizeof(lim));
+    return 0;
+}
+
+static int sys_setrlimit(struct regs *r) {
+    /* Nothing is enforced, so accept the request and report back what is
+     * actually in force rather than pretending it took effect. */
+    return sys_getrlimit(r);
+}
+
+/* ---------- file size ---------- */
+
+static int sys_truncate(struct regs *r) {
+    char path[VFS_PATH_MAX];
+    uint32_t len = arg2(r);
+    struct vfs_file *f;
+
+    if (len > 0x7FFFFFFFu) {
+        return -1;
+    }
+    if (ustr_copy(path, arg1(r), sizeof(path)) < 0) {
+        return -1;
+    }
+    if (vfs_truncate(path, len) < 0) {
+        return -1;
+    }
+    (void)f;
+    return 0;
+}
+
+static int sys_ftruncate(struct regs *r) {
+    struct uproc *p = cur_proc();
+    int fd = (int)arg1(r);
+    uint32_t len = arg2(r);
+
+    if (len > 0x7FFFFFFFu) {
+        return -1;
+    }
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd]) {
+        return -1;
+    }
+    return vfs_ftruncate(p->fds[fd], len) < 0 ? -1 : 0;
+}
+
+static int sys_rmdir(struct regs *r) {
+    char path[VFS_PATH_MAX];
+
+    if (ustr_copy(path, arg1(r), sizeof(path)) < 0) {
+        return -1;
+    }
+    return vfs_rmdir(path) < 0 ? -1 : 0;
+}
+
 void syscall_dispatch(struct regs *r) {
     struct uproc *p = cur_proc();
     int ret = -1;
@@ -1335,7 +1814,20 @@ void syscall_dispatch(struct regs *r) {
     case SYS_DUP2:    ret = sys_dup2(r); break;
     case SYS_PIPE:    ret = sys_pipe(r); break;
     case SYS_TIME:    ret = (int)rtc_unix(); break;
+    case SYS_MMAP:    ret = sys_mmap(r); break;
     case SYS_MUNMAP:  ret = sys_munmap(r); break;
+    case SYS_MPROTECT:ret = sys_mprotect(r); break;
+    case SYS_MADVISE: ret = sys_madvise(r); break;
+    case SYS_MSYNC:   ret = sys_msync(r); break;
+    case SYS_TRUNCATE:  ret = sys_truncate(r); break;
+    case SYS_FTRUNCATE: ret = sys_ftruncate(r); break;
+    case SYS_RMDIR:   ret = sys_rmdir(r); break;
+    case SYS_TIMES:   ret = sys_times(r); break;
+    case SYS_GETRUSAGE: ret = sys_getrusage(r); break;
+    case SYS_GETRLIMIT: ret = sys_getrlimit(r); break;
+    case SYS_SETRLIMIT: ret = sys_setrlimit(r); break;
+    case SYS_CLOCK_GETTIME: ret = sys_clock_gettime(r); break;
+    case SYS_CLOCK_SETTIME: ret = sys_clock_settime(r); break;
     case SYS_FORK:    ret = sys_fork(r); break;
     case SYS_EXECVE:  ret = sys_execve(r); break;
     case SYS_SIGACTION:   ret = sys_sigaction(r); break;
@@ -1346,12 +1838,21 @@ void syscall_dispatch(struct regs *r) {
     case SYS_CONNECT: ret = sys_connect(r); break;
     case SYS_LISTEN:  ret = sys_listen(r); break;
     case SYS_ACCEPT:  ret = sys_accept(r); break;
+    case SYS_SEND:    ret = sys_send(r); break;
+    case SYS_RECV:    ret = sys_recv(r); break;
+    case SYS_SENDTO:  ret = sys_sendto(r); break;
+    case SYS_RECVFROM:ret = sys_recvfrom(r); break;
+    case SYS_GETSOCKNAME: ret = sys_getsockname(r); break;
+    case SYS_SETSOCKOPT:  ret = sys_setsockopt(r); break;
+    case SYS_GETHOSTBYNAME: ret = sys_gethostbyname(r); break;
+    case SYS_GETIFADDR:   ret = sys_getifaddr(r); break;
+    case SYS_GETIFADDRS:  ret = sys_getifaddrs(r); break;
     case SYS_GETUID:  ret = sched_current()->uid; break;
     case SYS_GETGID:  ret = sched_current()->gid; break;
-    case SYS_GETEUID: ret = sched_current()->uid; break;
-    case SYS_GETEGID: ret = sched_current()->gid; break;
-    case SYS_SETUID:  sched_current()->uid = (uint16_t)a1; ret = 0; break;
-    case SYS_SETGID:  sched_current()->gid = (uint16_t)a1; ret = 0; break;
+    case SYS_GETEUID: ret = sched_current()->euid; break;
+    case SYS_GETEGID: ret = sched_current()->egid; break;
+    case SYS_SETUID:  sched_current()->uid = sched_current()->euid = (uint16_t)a1; ret = 0; break;
+    case SYS_SETGID:  sched_current()->gid = sched_current()->egid = (uint16_t)a1; ret = 0; break;
     case SYS_GETTID:  ret = sched_current()->pid; break;
     case SYS_UNAME: {
         char *buf = (char *)(uintptr_t)a1;
@@ -1570,31 +2071,33 @@ void syscall_dispatch(struct regs *r) {
         uint16_t *ruid = (uint16_t *)(uintptr_t)a1;
         uint16_t *euid = (uint16_t *)(uintptr_t)arg2(r);
         uint16_t *suid = (uint16_t *)(uintptr_t)arg3(r);
-        if (uptr_ok(a1, 2) && uptr_ok(arg2(r), 2) && uptr_ok(arg3(r), 2)) {
-            *ruid = sched_current()->uid;
-            *euid = sched_current()->uid;
-            *suid = sched_current()->uid;
-            ret = 0;
-        }
+        struct task *t = sched_current();
+        if (ruid && uptr_ok(a1, 2)) *ruid = t->uid;
+        if (euid && uptr_ok(arg2(r), 2)) *euid = t->euid;
+        if (suid && uptr_ok(arg3(r), 2)) *suid = t->suid;
+        ret = 0;
         break;
     }
     case SYS_GETRESGID: {
         uint16_t *rgid = (uint16_t *)(uintptr_t)a1;
         uint16_t *egid = (uint16_t *)(uintptr_t)arg2(r);
         uint16_t *sgid = (uint16_t *)(uintptr_t)arg3(r);
-        if (uptr_ok(a1, 2) && uptr_ok(arg2(r), 2) && uptr_ok(arg3(r), 2)) {
-            *rgid = sched_current()->gid;
-            *egid = sched_current()->gid;
-            *sgid = sched_current()->gid;
-            ret = 0;
-        }
+        struct task *t = sched_current();
+        if (rgid && uptr_ok(a1, 2)) *rgid = t->gid;
+        if (egid && uptr_ok(arg2(r), 2)) *egid = t->egid;
+        if (sgid && uptr_ok(arg3(r), 2)) *sgid = t->sgid;
+        ret = 0;
         break;
     }
     case SYS_SETRESUID: {
         uint16_t ruid = (uint16_t)a1;
         uint16_t euid = (uint16_t)arg2(r);
         uint16_t suid = (uint16_t)arg3(r);
-        sched_current()->uid = ruid;
+        struct task *t = sched_current();
+        /* -1 means "leave this one alone", as on Linux. */
+        if (ruid != 0xFFFFu) t->uid = ruid;
+        if (euid != 0xFFFFu) t->euid = euid;
+        if (suid != 0xFFFFu) t->suid = suid;
         ret = 0;
         break;
     }
@@ -1602,7 +2105,10 @@ void syscall_dispatch(struct regs *r) {
         uint16_t rgid = (uint16_t)a1;
         uint16_t egid = (uint16_t)arg2(r);
         uint16_t sgid = (uint16_t)arg3(r);
-        sched_current()->gid = rgid;
+        struct task *t = sched_current();
+        if (rgid != 0xFFFFu) t->gid = rgid;
+        if (egid != 0xFFFFu) t->egid = egid;
+        if (sgid != 0xFFFFu) t->sgid = sgid;
         ret = 0;
         break;
     }

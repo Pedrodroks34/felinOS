@@ -266,6 +266,32 @@ static int be_sync(struct vfs_mount *m) {
     return VFS_OK;
 }
 
+static int be_truncate(struct vfs_file *f, uint64_t size) {
+    int fd = (int)(uintptr_t)f->priv - 1;
+
+    if (size > 0xFFFFFFFFull) {
+        return VFS_EFBIG;
+    }
+    gatofs_fs_lock();
+    int r = gatofs_truncate(fd, (uint32_t)size);
+    if (r == 0) {
+        f->pos = gatofs_tell(fd);
+    }
+    gatofs_fs_unlock();
+    if (r >= 0) {
+        return VFS_OK;
+    }
+    /* gatofs reports its own negative codes; map them onto the VFS set. */
+    switch (r) {
+    case GATOFS_EISDIR:   return VFS_EISDIR;
+    case GATOFS_EINVAL:   return VFS_EINVAL;
+    case GATOFS_ENOSPC:   return VFS_ENOSPC;
+    case GATOFS_ENOMOUNT: return VFS_ENODEV;
+    case GATOFS_EIO:      return VFS_EIO;
+    default:              return VFS_EINVAL;
+    }
+}
+
 const struct fs_ops gatofs_ops = {
     .name = "gatofs",
     .mount = be_mount,
@@ -285,4 +311,5 @@ const struct fs_ops gatofs_ops = {
     .statfs = be_statfs,
     .sync = be_sync,
     .size = be_size,
+    .truncate = be_truncate,
 };

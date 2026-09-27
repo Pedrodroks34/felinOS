@@ -18,20 +18,24 @@ interactive shell with 90 commands.
 FelinOS 0.2  -  Gato kernel 0.2 (x86_64)
 
   [ok] global descriptors     flat 64-bit code and data segments
-  [ok] interrupt table        32 exceptions, 16 hardware IRQs
+  [ok] interrupt table        32 exceptions, 16 hardware IRQs, 5 APIC vectors
   [ok] memory map             65023 KB reported by the bootloader
   [ok] physical memory        16352 frames (63 MB), 15717 free
   [ok] paging                 63 MB mapped, 30 tables, directory at 0x0015c000
   [ok] virtual memory         demand paging, copy-on-write, 5 regions
   [ok] kernel heap            55768 KB demand-paged heap at 0xc0000000
   [ok] system timer           PIT channel 0 at 100 Hz
+  [ok] local apic             0xfee00000, 4 processor(s), 4 online
+  [ok] acpi                   2 tables, _S5_ sleep type 6
   [ok] keyboard               PS/2 set 1, shift, ctrl and caps lock
   [ok] serial console         COM1 at 115200 baud, input and output
   [ok] real time clock        2026-09-19 12:00:00
   [ok] processor              GenuineIntel family 6 model 6
   [ok] pci bus                6 devices on the bus
   [ok] ata controller         4 device(s), first is QEMU HARDDISK
+  [ok] buffer cache           4 MB, 1024 lines of 4 KB over the ATA layer
   [ok] swap                   63 MB on hdd, 16376 slots
+  [ok] network                e1000, 10.0.2.15/24 via DHCP
   [ok] virtual filesystem     / is gatofs (hdb), /dev, /proc and /tmp mounted
   [ok] gatofs                 GatoFS on hdb, 256 MB
   [ok] shell                  vsh with pipes, redirection and history
@@ -50,16 +54,28 @@ Requirements: `gcc` (x86-64; `-m32` only for the `hello32` demo), `binutils`,
 ```sh
 make            # builds gato.bin and felinos.iso
 make clean      # removes objects, the kernel and the iso
-make distclean  # also removes the virtual disk image
+make distclean  # also removes the virtual disk images
 ```
+
+The kernel and the user programs build without warnings; the CI workflow
+fails the build if that ever stops being true.
 
 ## Running
 
 ```sh
-make run         # boots felinos.iso through GRUB in QEMU, with a 32 MB disk
+make run         # boots felinos.iso through GRUB in QEMU
 make run-kernel  # boots gato.bin directly, skipping the bootloader
 make run-serial  # same, but headless: the whole session goes over COM1
+make run-smp     # boots with 4 processors, so the AP bring-up path runs
+make test        # runs the in-kernel test suite and exits
 ```
+
+`make run` attaches four IDE disks so that every storage path has something
+to work with: `disk.img` (GatoFS root), `gatofs.img` (a second GatoFS
+volume), `fat32.img` (blank, 64 MB) and `swap.img`. Their sizes are
+`VDISK_MB`, `SWAP_MB` and `FATDISK_MB`; the images are created on first use.
+`make run NETDEV_BACKEND=none` drops the network card, and `NETDEV_BACKEND` is
+also how the DHCP and name-resolution commands get their default gateway.
 
 The console is mirrored to the VGA text screen and to COM1 at 115200 baud,
 and keyboard input is merged with serial input, including ANSI arrow keys.
@@ -73,21 +89,28 @@ only requires a Multiboot loader, a VGA text mode and a PS/2 keyboard.
 
 ```
 boot/boot.s          Multiboot header, stack setup, entry into kernel_main
-linker.ld            loads the kernel at 1 MB, exports kernel_start/kernel_end
+linker.ld            AP trampoline at 0x8000, handover block at 0x7000,
+                     kernel loaded at 1 MB
 
 kernel/
   kernel.c           boot sequence and subsystem initialisation
   console.c          VGA + serial output, kprintf, kernel log ring buffer
   system.c           multiboot parsing, memory layout, version information
-  gdt.c  idt.c       segmentation, 32 exceptions, 16 IRQs, panic handler
+  gdt.c  idt.c       segmentation, 32 exceptions, 16 IRQs, APIC vectors, panic
+  gdt_flush.s        lgdt plus far return, so a GDT can be reloaded in place
   pmm.c              physical frame bitmap allocator with reference counts
   paging.c           page directories/tables, address spaces, page faults
   vmm.c              virtual memory manager: regions, demand paging, COW
   swap.c             disk-backed swap area, page-out/page-in
+  bcache.c           block cache between the filesystems and the ATA driver
   sched.c            preemptive round-robin scheduler, tasks, sleep/wait/kill
   sched_asm.s        the kernel stack switch (switch_context)
+  fpu.c              per-task FPU/SSE state, fxsave64/fxrstor64
+  fork_asm.s         the ring 3 return path used by fork
   user.c             ring 3 processes, ELF loader, syscalls
-  isr.s gdt_flush.s  low level stubs
+  user_asm.s         the syscall entry and return stubs
+  isr.s              one stub per exception, IRQ and APIC vector
+  ap_trampoline.s    real mode -> long mode entry code for application CPUs
 
   lib/
     string.c         mem*/str* routines, ctype helpers, number conversion
@@ -100,22 +123,36 @@ kernel/
     screen.c         full-screen abstraction over VGA and ANSI terminals
     input.c          merges keyboard and serial, parses escape sequences
     keyboard.c       PS/2 scancode set 1, modifiers, extended keys, F1-F10
+    font.c fb.c      8x16 bitmap font and linear framebuffer output
     pic.c            8259 remapping and masking
     pit.c            100 Hz timer, uptime, sleep
     rtc.c            CMOS clock, unix time, calendar arithmetic
     ata.c            ATA PIO: IDENTIFY, LBA28/48 read/write, MBR partitions,
                      interrupt-driven once the scheduler is up (IRQ14/15)
+    ahci.c           AHCI/SATA: port setup, command lists, FIS handling
     pci.c            configuration space scan, vendor and class names
     cpu.c            CPUID vendor, brand, family and feature flags
-    acpi.c           RSDP/RSDT/XSDT/FADT parser, _S5_ lookup, ACPI reset register
+    apic.c           local APIC, I/O APIC, MADT, INIT/SIPI bring-up of the APs
+    acpi.c           RSDP/RSDT/XSDT/FADT/MADT parser, _S5_, ACPI reset register
+    e1000.c          Intel e1000 NIC: descriptors, TX/RX rings
     power.c          reboot, power off, halt (ACPI first, legacy ports as fallback)
     speaker.c        PC speaker tones
 
+  net/
+    eth.c netif.c    frame send/receive, the interface table, checksum offload
+    arp.c ip.c       address resolution and IPv4 with reassembly
+    icmp.c udp.c     ping, UDP with ports and checksums
+    tcp.c            TCP: handshake, sliding window, retransmission, teardown
+    dhcp.c dns.c     address configuration and name resolution
+    socket.c         the BSD socket layer: sockets, bind, listen, accept, data
+    netbuf.c net.c   packet buffers and the transmit/receive path
+
   fs/
-    vfs.c            VFS core: mount table, path resolution, dispatch to the backends
+    vfs.c            VFS core: mount table, path resolution, dispatch to backends
     ramfs.c          RAM filesystem backend (/tmp, or / when there is no disk)
     gatofs.c         GatoFS on-disk filesystem driver
     gatofs_fs.c      GatoFS backend for the VFS, serialised by a per-task lock
+    fat32.c          FAT32 driver, plus in-kernel volume creation
     devfs.c          /dev backend: null, zero, full, random, console, kmsg, hdX
     procfs.c         /proc backend: meminfo, uptime, cpuinfo, mounts, <pid>/status
 
@@ -127,9 +164,16 @@ kernel/
     cmd_text.c       text processing commands
     cmd_sys.c        system and shell commands
     cmd_disk.c       block device commands
+    cmd_gatofs.c     the gatofs subcommand
+    cmd_fat32.c      the fat32 subcommand: format a volume, inspect partitions
+    cmd_net.c        ifconfig, ping, dhcp, dns
     cmd_mem.c        virtual memory, swap and self-test commands
     cmd_sched.c      ps, kill, renice, sched, fg
+    cmd_users.c      login, su, passwd, useradd, id, chown
     nano.c           the full-screen text editor
+    script.c         the shell script reader behind `source`
+    simplecc.c       a small C compiler that runs inside the shell
+    test.c           the automated test suite behind `test` and `make test`
 ```
 
 `pmm.c` tracks every physical frame in a bitmap, with a reference count per
@@ -199,7 +243,7 @@ root@felinos:/root$ hexdump -n 32 /dev/hda
 ## Commands
 
 Filesystem: `ls` `cd` `pwd` `mkdir` `rmdir` `touch` `rm` `cp` `mv` `cat`
-`tree` `find` `stat` `du` `df` `mount` `umount` `chmod` `file`
+`tree` `find` `stat` `du` `df` `mount` `umount` `chmod` `chown` `file`
 
 Text: `echo` `printf` `head` `tail` `wc` `grep` `sort` `uniq` `cut` `tr`
 `rev` `tee` `nl` `tac` `more` `hexdump` `strings` `diff` `nano`
@@ -207,10 +251,19 @@ Text: `echo` `printf` `head` `tail` `wc` `grep` `sort` `uniq` `cut` `tr`
 System: `help` `man` `which` `uname` `uptime` `date` `cal` `free` `lsmem`
 `ps` `kill` `renice` `sched` `fg` `dmesg` `whoami` `hostname` `clear` `color` `history` `alias`
 `unalias` `env` `export` `set` `unset` `sleep` `beep` `time` `sync` `true`
-`false` `test` `expr` `seq` `yes` `basename` `dirname` `lscpu` `exit`
+`false` `test` `expr` `seq` `yes` `basename` `dirname` `lscpu` `smp` `exit`
 
-Hardware and disks: `lspci` `lsblk` `blkid` `fdisk` `dd` `acpi` `reboot`
-`poweroff` `shutdown` `halt`
+Hardware and disks: `lspci` `lsblk` `blkid` `bcache` `fdisk` `dd` `fat32`
+`gatofs` `acpi` `reboot` `poweroff` `shutdown` `halt`
+
+Network: `ifconfig` `ping` `dhcp` `dns`
+
+Users: `login` `su` `passwd` `useradd` `id`
+
+Development: `source` (run a shell script) `simplecc` (the in-shell C
+compiler) `test` (the automated suite)
+
+Every command has a manual page: `man <command>`.
 
 Power management: `poweroff` and `reboot` use ACPI. At boot the kernel finds
 the RSDP (EBDA and BIOS area), walks the RSDT/XSDT, reads the FADT for the
@@ -261,6 +314,7 @@ Mounted at boot:
 /dev    devfs   null zero full random urandom console tty kmsg hda..hdd
 /proc   procfs  meminfo uptime version cpuinfo mounts filesystems <pid>/status
 /tmp    ramfs   volatile, lost on reboot
+/mnt/fat<N>  FAT32 partitions found on any ATA or AHCI disk
 ```
 
 The first boot on a new root creates `/bin /dev /etc /home /mnt /proc /root
@@ -352,9 +406,120 @@ any manual step.
 
 ## Roadmap
 
-- Priority classes and per-CPU run queues on top of the round-robin scheduler
-- A real on-disk filesystem, starting with FAT32 on the ATA driver
-- Loading and executing programs from disk instead of built-in commands
+- Per-CPU run queues and priority classes, so the application processors
+  actually run tasks instead of idling (see "Processors" below)
+- mmap of files, shared mappings and a page cache shared with the block layer
+- A writable CMOS clock, so `clock_settime` and `settimeofday` do something
+
+## Processors
+
+`apic.c` drives the local APIC and the I/O APIC, and `smp` reports what it
+found. The MADT is walked for processor local APIC entries and I/O APIC
+entries; the kernel then brings up every application processor it found.
+
+An AP is started the way the architecture requires: the bootstrap processor
+asserts INIT, which resets the target and drops it in real mode, then sends
+two SIPIs naming the page to start fetching from. The entry code
+(`kernel/ap_trampoline.s`) is linked at a fixed 0x8000, so the 16-bit jump
+offsets inside it are absolute linear addresses and nothing has to be copied
+into low memory at runtime. It loads its own flat GDT, switches to 32-bit
+mode to enable PAE, then to long mode. Before it can call any C code it pulls
+the kernel PML4 and a stack out of a fixed block at 0x7000, because until
+CR3 is loaded there are no page tables at all and a kernel address would
+fault. `ap_startup()` then maps the AP's own LAPIC, adopts the kernel GDT and
+TSS, enables the local APIC, and records the processor as online.
+
+```
+root@felinos:/root$ smp
+Local APIC at 0xfee00000
+I/O APIC   at 0xfec00000, ID 0
+4 processor(s) in the MADT, 4 online, this one is the bootstrap processor
+
+ CPU  APIC  ROLE        STATE     NOTE
+   0     0  bootstrap  online
+   1     1  app        online
+   2     2  app        online
+   3     3  app        online
+```
+
+The wait for the APs to report in is bounded: a processor that never answers
+is left marked offline and the boot carries on, so a bad firmware table
+degrades to single-processor operation instead of hanging.
+
+**The run queue is still global.** An application processor comes up, takes
+interrupts and idles in `hlt`, but the scheduler has a single run queue owned
+by the bootstrap processor, so it does not run tasks yet. Per-CPU run queues
+are the next step on the roadmap; the bring-up, the handover and the
+accounting are in place for them.
+
+## Networking
+
+Gato has a TCP/IP stack over an Intel e1000, which is what QEMU's default
+`e1000` device presents. The layers are separate files under `kernel/net/`:
+the driver and the interface table, Ethernet framing with ARP, IPv4 with
+reassembly, ICMP, UDP, TCP, then the socket layer. DHCP configures an address
+and a gateway, and DNS resolves names.
+
+```
+ifconfig                      # address, mask, gateway, MTU
+dhcp                          # request a lease
+ping 10.0.2.2                 # or a name, via DNS
+dns example.com
+```
+
+User programs use a BSD-shaped API from `user/net.h`: `socket`, `bind`,
+`connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`,
+`getsockname`, `setsockopt`, `closesocket`, plus `inet_addr`, `inet_ntoa`,
+`inet_pton`, `htons`, `htonl` and `gethostbyname`. Two programs ship with it:
+
+```
+nc -l 8080                    # listen and print what arrives
+nc 10.0.2.2 22                # connect and send stdin
+wget http://example.com/      # HTTP/1.0 client, -O to choose the output file
+```
+
+`mmap` today only serves `MAP_ANONYMOUS | MAP_PRIVATE`; a file-backed or
+shared mapping is rejected with `-1` rather than silently returning something
+wrong, because there is no page cache wired into the block layer yet.
+
+## Users, signals and identity
+
+There are real user accounts: `useradd <name>` creates one, `passwd` sets its
+password, `login` starts a shell as that user, and `su` switches. The shell
+tracks the current user and the prompt changes with it.
+
+Each process carries a real and effective user and group id, plus the saved
+set, so `setuid`/`setgid` and `setreuid`/`setregid` behave the way the POSIX
+calls describe: a privileged process can drop privilege with `seteuid`, and
+an unprivileged one cannot regain it. `id` prints the four ids, `chown` uses
+them, and `ls -l` shows the owner.
+
+Signals are delivered through `sigaction`, `sigprocmask` and `sigreturn`.
+`kill` sends by number; the exit status of a killed process is 128 + signal.
+
+## FAT32
+
+FAT32 is a read/write driver (`kernel/fs/fat32.c`): MBR partition tables of
+type 0x0B and 0x0C, the FAT chain, the directory tree and long file names.
+At boot any FAT32 partition found on an ATA or AHCI disk is mounted under
+`/mnt/fat<N>`.
+
+A blank image has no partition table, so there is nothing for the boot-time
+scan to find and `mkfs.vfat` lives on the host rather than in the kernel.
+`fat32 format` therefore writes the volume from inside the OS: an MBR, a boot
+sector, two FSInfo sectors, a backup boot sector and two FATs, with the
+geometry computed from the device size. `fat32 info` shows the partition
+table of any disk.
+
+```
+fat32 info                    # every disk and its partitions
+fat32 format hdc              # write an MBR and a FAT32 volume on hdc
+fat32 format -f -L WORK hdc   # overwrite, with a volume label
+```
+
+`format` refuses to touch a disk that already has a partition table unless
+`-f` is given. The volume is not mounted by `format`; reboot, or
+`mount /mnt/fat0 fat32 hdc1`, to use it.
 
 ## GatoFS (disk filesystem)
 
@@ -407,18 +572,52 @@ bitmap and superblock counts) instead of only reporting.
 ## User mode and syscalls
 
 Gato runs programs in ring 3. The GDT has user code/data segments (0x1B/0x23)
-and a TSS; `int 0x80` is a DPL-3 gate. ABI: `eax` = number, `ebx/ecx/edx` =
-args, result in `eax` (numbers in `kernel/syscall.h`): exit, write, read,
-open, close, getpid, uptime, sleep, sbrk. `open` goes through the VFS, so it works on
-every mount (`/`, `/tmp`, `/dev`, `/proc`); descriptors are closed when the process
-exits or is killed. Pointers are validated against user
-regions. A user fault (page fault, GPF...) kills only the process.
+and a TSS; `int 0x80` is a DPL-3 gate. ABI: `rax` = number, `rdi/rsi/rdx/
+rcx/r8/r9` = args, result in `rax` (numbers in `kernel/syscall.h`). Pointers
+are validated against the process's own regions, and a user fault (page
+fault, GPF) kills only the process, not the kernel.
 
-Programs are static ELF64 (x86-64) files, or ELF32 (i386, run in compatibility mode), linked at 0x40000000 (`user/`), embedded in
-the kernel and installed at `/bin` on boot. Run one by name (`hello a b`) or
-with `exec <path> [args]`. Add one: write `user/x.c`, add it to `USER_PROGS`
-in the Makefile, to `kernel/progs.s` and to the table in `kernel/user.c`.
-Demos: `hello`, `cat`, `crash [kmem|cli|null]`, `spin [seconds]`, `count [n] [ms]`, `launch`.
+`open` goes through the VFS, so it works on every mount (`/`, `/tmp`, `/dev`,
+`/proc`); descriptors are closed when the process exits or is killed.
+
+The syscall set covers:
+
+- **Files and memory**: `read` `write` `open` `close` `lseek` `stat` `fstat`
+  `readdir` `mkdir` `rmdir` `unlink` `rename` `chdir` `getcwd` `dup` `dup2`
+  `pipe` `fcntl` `truncate` `ftruncate` `mmap` `munmap` `mprotect` `madvise`
+  `msync` `sbrk`
+- **Processes**: `exit` `fork` `execve` `spawn` `waitpid` `kill` `getpid`
+  `getppid` `yield` `sleep`
+- **Identity**: `getuid` `geteuid` `getgid` `getegid` `setuid` `setgid`
+  `setreuid` `setregid` `getresuid` `getresgid` `setresuid` `setresgid`
+- **Signals**: `sigaction` `sigprocmask` `sigreturn`
+- **Time**: `time` `uptime` `nanosleep` `clock_gettime` `gettimeofday` `times`
+  `getrusage`
+- **Sockets**: `socket` `bind` `connect` `listen` `accept` `send` `recv`
+  `sendto` `recvfrom` `getsockname` `setsockopt` `gethostbyname` `getifaddr`
+  `getifaddrs`
+- **System**: `uname` `getrlimit` `setrlimit`
+
+A few of these are deliberately partial, and say so rather than pretending:
+
+- `mmap` serves `MAP_ANONYMOUS | MAP_PRIVATE` only. File-backed and shared
+  mappings return `-1`, because there is no page cache integrated with the
+  block layer yet and returning wrong data silently would be worse.
+- `clock_settime` and `settimeofday` return `-ENOSYS`; the kernel reads the
+  CMOS clock but never writes it.
+- `setsockopt` accepts and ignores its options, which is enough for
+  `SO_REUSEADDR` to succeed; there is nothing configurable to set yet.
+- `setrlimit` reports the limits actually in force rather than claiming to
+  enforce limits it does not.
+
+Programs are static ELF64 (x86-64) files, or ELF32 (i386, run in compatibility
+mode), linked at 0x40000000 (`user/`), embedded in the kernel and installed at
+`/bin` on boot. Run one by name (`hello a b`) or with `exec <path> [args]`.
+Add one: write `user/x.c`, add it to `USER_PROGS` in the Makefile, to
+`kernel/progs.s` and to the table in `kernel/user.c`.
+
+Demos: `hello`, `hello32`, `cat`, `crash [kmem|cli|null]`, `spin [seconds]`,
+`count [n] [ms]`, `launch`, `nc`, `wget`, `mmtest`.
 
 Extra syscalls for multitasking: `yield` (10), `getppid` (11), `spawn(path, argv)`
 (12), `waitpid(pid, &status)` (13, pid -1 waits for any child) and
@@ -516,6 +715,14 @@ pass/fail.
   `boot/boot.s` enables PAE + long mode with a temporary 4 GiB identity map, then calls `kernel_main`.
 - Memory: 4-level paging (PML4/PDPT/PD/PT). Kernel, stacks and physical memory stay below 4 GiB
   and are identity-mapped, so kernel APIs still use 32-bit addresses (max 4 GiB RAM).
-- Syscalls (`int 0x80`, number in rax): 64-bit programs pass args in rdi/rsi/rdx; 32-bit programs
-  (ELF32, `hello32`) keep ebx/ecx/edx. GDT: 0x1B = 32-bit user code, 0x2B = 64-bit user code.
-- Code is built with `-mgeneral-regs-only` (SSE/FPU state is not saved on context switch).
+- Syscalls (`int 0x80`, number in rax): 64-bit programs pass args in
+  rdi/rsi/rdx/rcx/r8/r9; 32-bit programs (ELF32, `hello32`) keep
+  ebx/ecx/edx and the extra arguments are read off the interrupted stack.
+  GDT: 0x1B = 32-bit user code, 0x2B = 64-bit user code.
+- The kernel itself is built with `-mgeneral-regs-only` and uses no SSE or FPU
+  instructions. Ring 3 code is free to use them: `kernel/fpu.c` saves and
+  restores the full state on every context switch.
+- The application-processor entry code is the one place that is deliberately
+  not written in C: it has to reach long mode before there are page tables to
+  load C from. See "Processors" above.
+

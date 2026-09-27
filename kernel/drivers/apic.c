@@ -13,9 +13,14 @@
 #include "gdt.h"
 #include "paging.h"
 #include "acpi.h"
+#include "fpu.h"
+#include "lib/heap.h"
 
 static void parse_madt(void);
 static void apic_setup_timer(void);
+
+/* Runs on an application processor, entered from the AP trampoline. */
+void ap_startup(void);
 
 #define APIC_BASE_MSR 0x1B
 
@@ -41,10 +46,39 @@ static uint32_t lapic_phys_base;
 static uint32_t ioapic_phys_base;
 static uint8_t ioapic_id_val;
 
+/* The application-processor entry code, linked at a fixed low address by
+ * linker.ld. It is not copied anywhere: the kernel identity maps that page
+ * and the 16-bit offsets inside the blob are absolute linear addresses. */
+extern void ap_trampoline_start(void);
+
+/* Low physical pages the bootstrap processor hands to the APs. 0x7000 holds
+ * the handover block and 0x8000 the entry code; both sit below 1 MiB, where
+ * the firmware leaves RAM alone and a real-mode entry point can reach them. */
+#define AP_HANDOVER_PHYS   0x7000u
+#define AP_TRAMPOLINE_PHYS 0x8000u
+#define AP_STACK_SIZE      16384u
+
+struct ap_handover {
+    uint64_t pml4;       /* physical address of the kernel PML4 */
+    uint64_t stack_top;  /* the kernel is identity mapped, so physical is it */
+};
+
+/* Written by the bootstrap processor and read by the trampoline before it
+ * has page tables of its own, so it cannot be an ordinary variable. */
+static struct ap_handover ap_handover_block __attribute__((section(".ap_handover"), used, aligned(8)));
+
 static volatile int ap_booted_count;
-static uint32_t ap_entry_point;
-static uint32_t ap_stack_top[16];
-static uint32_t ap_pml4[16];
+
+/* Set by each AP from inside ap_startup(), indexed by slot rather than by
+ * APIC id so a stray processor cannot scribble outside the table. */
+static volatile int ap_online[16];
+
+/* Spins through a volatile counter so the delay survives optimisation. */
+static void ap_delay(uint32_t count) {
+    for (volatile uint32_t i = 0; i < count; i++) {
+        __asm__ volatile ("pause");
+    }
+}
 
 void apic_init(void) {
     cpu_count = 0;
@@ -170,21 +204,28 @@ void apic_send_eoi(uint32_t vector) {
     lapic_mmio[APIC_EOI / 4] = 0;
 }
 
-void apic_send_ipi(int apic_id, uint8_t vector, uint32_t dest_mode, uint32_t level) {
+/* Raw ICR write. `delivery` is one of the APIC_ICR_DM_* modes and `target` is
+ * a physical destination APIC id, so callers are not tempted to pass
+ * already-shifted bit soup around. */
+static void apic_ipi_raw(uint8_t vector, uint32_t delivery, uint32_t target) {
     if (!lapic_mmio) return;
 
-    while (lapic_mmio[APIC_ICR_LOW / 4] & (1u << 12)) {
+    while (lapic_mmio[APIC_ICR_LOW / 4] & APIC_ICR_DELIVSTAT) {
         __asm__ volatile ("pause");
     }
 
-    lapic_mmio[APIC_ICR_HIGH / 4] = ((uint32_t)apic_id) << 24;
+    lapic_mmio[APIC_ICR_HIGH / 4] = target << 24;
+    /* ICR Low has to be written with a single 32-bit store. */
+    lapic_mmio[APIC_ICR_LOW / 4] = (uint32_t)vector | delivery;
 
-    uint32_t icr_low = vector | dest_mode | level | APIC_ICR_ASSERT;
-    lapic_mmio[APIC_ICR_LOW / 4] = icr_low;
-
-    while (lapic_mmio[APIC_ICR_LOW / 4] & (1u << 12)) {
+    while (lapic_mmio[APIC_ICR_LOW / 4] & APIC_ICR_DELIVSTAT) {
         __asm__ volatile ("pause");
     }
+}
+
+void apic_send_ipi(int apic_id, uint8_t vector, uint32_t dest_mode, uint32_t level) {
+    if (!lapic_mmio) return;
+    apic_ipi_raw(vector, APIC_ICR_DM_FIXED, (uint32_t)apic_id);
 }
 
 void ioapic_set_redirection(uint8_t irq, uint8_t vector, uint32_t dest_apic_id, int masked) {
@@ -233,6 +274,27 @@ int smp_cpu_count(void) {
     return cpu_count;
 }
 
+int smp_cpu_online(int index) {
+    if (index < 0 || index >= cpu_count) return 0;
+    return cpus[index].initialized ? 1 : 0;
+}
+
+int smp_cpu_apic_id(int index) {
+    if (index < 0 || index >= cpu_count) return -1;
+    return cpus[index].apic_id;
+}
+
+int smp_cpu_is_bsp(int index) {
+    if (index < 0 || index >= cpu_count) return 0;
+    return cpus[index].is_bsp ? 1 : 0;
+}
+
+/* Present in the firmware tables, whether or not it answered. */
+int smp_cpu_detected(int index) {
+    if (index < 0 || index >= cpu_count) return 0;
+    return cpus[index].present ? 1 : 0;
+}
+
 int smp_is_bsp(void) {
     return cpus[0].is_bsp;
 }
@@ -252,6 +314,13 @@ void smp_init(void) {
     klog("smp: %d CPU(s) detected", cpu_count);
 }
 
+/* MADT entry layouts (all fields at the offset shown):
+ *   type 0  Processor Local APIC:  type len acpi_id apic_id flags(4)
+ *   type 1  I/O APIC:             type len id    reserved address(8)
+ *   type 2  Interrupt Source Override: type len src_bus src_irq gsi(4) flags(2)
+ *   type 5  Local APIC NMI:       type len acpi_id flags(2) apic_id(4)
+ *   type 9  x2APIC entry:         type len reserved acpi_id apic_id(4) flags(4) ...
+ */
 void parse_madt(void) {
     const struct acpi_table_ref *madt_ref = NULL;
     for (int i = 0; i < acpi_table_count(); i++) {
@@ -274,13 +343,14 @@ void parse_madt(void) {
         uint8_t type = ptr[0];
         uint8_t len = ptr[1];
 
-        if (ptr + len > end) break;
+        if (len < 2 || ptr + len > end) break;
 
         if (type == 0 && len >= 8) {
-            uint8_t acpi_id = ptr[3];
-            uint8_t apic_id = ptr[4];
+            uint8_t acpi_id = ptr[2];
+            uint8_t apic_id = ptr[3];
             uint32_t flags = *(uint32_t *)(ptr + 4);
 
+            /* bit 0 = enabled, bit 1 = online capable */
             if (flags & 1) {
                 int found = 0;
                 for (int i = 0; i < cpu_count; i++) {
@@ -298,16 +368,44 @@ void parse_madt(void) {
                     klog("smp: found AP with APIC ID %u (ACPI ID %u)", apic_id, acpi_id);
                 }
             }
-        } else if (type == 1 && len >= 8) {
-            ioapic_id_val = ptr[3];
-            ioapic_phys_base = *(uint32_t *)(ptr + 4);
-            klog("smp: I/O APIC at 0x%08x, ID %u", ioapic_phys_base, ioapic_id_val);
+        } else if (type == 1 && len >= 12) {
+            ioapic_id_val = ptr[2];
+            /* The address is 8 bytes; only the low half is ever mapped. */
+            ioapic_phys_base = (uint32_t)ptr[4] | ((uint32_t)ptr[5] << 8) |
+                               ((uint32_t)ptr[6] << 16) | ((uint32_t)ptr[7] << 24);
+            if (ioapic_phys_base)
+                klog("smp: I/O APIC at 0x%08x, ID %u", ioapic_phys_base, ioapic_id_val);
         } else if (type == 2 && len >= 10) {
-            uint8_t bus = ptr[3];
-            uint8_t irq = ptr[4];
+            uint8_t bus = ptr[2];
+            uint8_t irq = ptr[3];
             uint32_t gsi = *(uint32_t *)(ptr + 4);
             uint16_t flags = *(uint16_t *)(ptr + 8);
             klog("smp: interrupt override: bus %u, irq %u -> gsi %u, flags %x", bus, irq, gsi, flags);
+        } else if (type == 9 && len >= 16) {
+            /* x2APIC entries carry a 32-bit APIC ID. Gato maps the LAPIC in
+             * 4-byte registers, so an id above 255 cannot be addressed and
+             * such a processor is left out. */
+            uint8_t acpi_id = ptr[3];
+            uint32_t apic_id = *(uint32_t *)(ptr + 4);
+            uint32_t flags = *(uint32_t *)(ptr + 8);
+
+            if ((flags & 1) && apic_id <= 0xFF) {
+                int found = 0;
+                for (int i = 0; i < cpu_count; i++) {
+                    if (cpus[i].apic_id == (int)apic_id) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found && cpu_count < 16) {
+                    cpus[cpu_count].is_bsp = 0;
+                    cpus[cpu_count].apic_id = (int)apic_id;
+                    cpus[cpu_count].present = 1;
+                    cpus[cpu_count].initialized = 0;
+                    cpu_count++;
+                    klog("smp: found AP with APIC ID %u (x2APIC, ACPI ID %u)", apic_id, acpi_id);
+                }
+            }
         }
 
         ptr += len;
@@ -316,11 +414,131 @@ void parse_madt(void) {
     vmm_free((void *)madt);
 }
 
-void smp_boot_aps(void) {
-    if (!apic_present) return;
+/* Called from the trampoline once the AP is in long mode with the kernel
+ * PML4 loaded. This runs on an application processor, never on the BSP. */
+void ap_startup(void) {
+    int slot = -1;
 
-    klog("smp: booting application processors not implemented (trampoline not linked)");
-    return;
+    /* The MMIO window was mapped for the BSP, but each processor has its own
+     * local APIC, so the window has to be re-established here. */
+    if (!apic_present || !lapic_phys_base) {
+        klog("smp: AP started without an APIC, parking");
+        goto park;
+    }
+
+    lapic_mmio = (volatile uint32_t *)vmm_map_physical(lapic_phys_base, 0x1000,
+                                                      VM_READ | VM_WRITE | VM_UNCACHED,
+                                                      "lapic-ap");
+    if (!lapic_mmio) {
+        klog("smp: AP could not map its own LAPIC, parking");
+        goto park;
+    }
+
+    /* Adopt the kernel GDT: the trampoline set up a private one that has
+     * neither a TSS nor any ring 3 descriptors. */
+    gdt_reload();
+    fpu_init();
+    ioapic_init();
+
+    /* Enable this LAPIC, with the timer masked and the error vector in
+     * place. An AP does not drive the timekeeping clock, so the local timer
+     * stays off rather than stealing ticks from the bootstrap processor. */
+    lapic_mmio[APIC_SVR / 4] = APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR;
+    lapic_mmio[APIC_LVT_TMR / 4] = APIC_LVT_MASKED | APIC_TIMER_VECTOR;
+    lapic_mmio[APIC_LVT_ERR / 4] = APIC_LVT_MASKED | APIC_ERROR_VECTOR;
+    lapic_mmio[APIC_LVT_LINT0 / 4] = APIC_LVT_MASKED;
+    lapic_mmio[APIC_LVT_LINT1 / 4] = APIC_LVT_MASKED;
+
+    /* Publish the state before bumping the counter, so the bootstrap
+     * processor never sees a count that outruns the tables it reads. */
+    for (int i = 0; i < cpu_count; i++) {
+        if (cpus[i].is_bsp || cpus[i].initialized) continue;
+        if (cpus[i].apic_id != apic_get_id()) continue;
+        cpus[i].initialized = 1;
+        if (i < (int)(sizeof(ap_online) / sizeof(ap_online[0]))) {
+            ap_online[i] = 1;
+        }
+        slot = i;
+        break;
+    }
+
+    __asm__ volatile ("mfence" ::: "memory");
+    ap_booted_count++;
+
+    if (slot >= 0) {
+        klog("smp: AP %d online, APIC ID %u", slot, apic_get_id());
+    } else {
+        klog("smp: an unlisted AP came up, APIC ID %u", apic_get_id());
+    }
+
+park:
+    /* The scheduler still has a single global run queue owned by the
+     * bootstrap processor, so an AP has nothing to run. It stays in a
+     * low-power wait, still able to take interrupts, which is what lets the
+     * machine be described honestly as having the processors online. */
+    for (;;) {
+        __asm__ volatile ("sti; hlt");
+    }
+}
+
+/* Brings up every AP the MADT advertised. One that fails to report in is
+ * left marked uninitialized instead of taking the system down, so a bad
+ * firmware table degrades to single-processor operation. */
+void smp_boot_aps(void) {
+    if (!apic_present) {
+        return;
+    }
+    if (cpu_count <= 1) {
+        klog("smp: only the bootstrap processor was found");
+        return;
+    }
+
+    struct address_space *kspace = paging_kernel_space();
+    if (!kspace || !kspace->pd_phys) {
+        klog("smp: no kernel address space, cannot start APs");
+        return;
+    }
+
+    void *stack = kmalloc(AP_STACK_SIZE);
+    if (!stack) {
+        klog("smp: cannot allocate an AP stack");
+        return;
+    }
+    ap_handover_block.pml4 = kspace->pd_phys;
+    ap_handover_block.stack_top = (uint64_t)(uintptr_t)stack;
+
+    /* A SIPI names the 4 KiB page its target should begin fetching from. */
+    uint8_t vector = (uint8_t)(AP_TRAMPOLINE_PHYS >> 12);
+    int started = 0;
+
+    for (int i = 1; i < cpu_count; i++) {
+        /* INIT asserts the reset line: the AP lands in real mode at the
+         * architectural reset vector with interrupts masked. */
+        apic_ipi_raw(0, APIC_ICR_DM_INIT, (uint32_t)cpus[i].apic_id);
+        ap_delay(100000);
+
+        /* Two SIPIs, because the first can be dropped while the AP is still
+         * coming out of reset. The pause between them is part of the
+         * handshake rather than a guess. */
+        apic_ipi_raw(vector, APIC_ICR_DM_SIPI, (uint32_t)cpus[i].apic_id);
+        ap_delay(100000);
+        apic_ipi_raw(vector, APIC_ICR_DM_SIPI, (uint32_t)cpus[i].apic_id);
+        started++;
+    }
+
+    /* Bounded wait: an AP that never reports must not stall the boot. */
+    for (uint32_t waited = 0; waited < 20000000u; waited++) {
+        if (ap_booted_count >= started) {
+            break;
+        }
+        __asm__ volatile ("pause");
+    }
+
+    int online = 0;
+    for (int i = 0; i < cpu_count; i++) {
+        if (cpus[i].initialized) online++;
+    }
+    klog("smp: %d of %d processor(s) online", online, cpu_count);
 }
 
 uint32_t apic_get_base(void) {
@@ -347,7 +565,7 @@ void smp_send_reschedule_ipi(void) {
     if (!apic_present) return;
     for (int i = 0; i < cpu_count; i++) {
         if (cpus[i].present && cpus[i].initialized && !cpus[i].is_bsp) {
-            apic_send_ipi(cpus[i].apic_id, APIC_RESCHED_VECTOR, APIC_ICR_DM_FIXED, APIC_ICR_ASSERT);
+            apic_ipi_raw(APIC_RESCHED_VECTOR, APIC_ICR_DM_FIXED, (uint32_t)cpus[i].apic_id);
         }
     }
 }

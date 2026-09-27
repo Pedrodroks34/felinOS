@@ -92,6 +92,7 @@ int cmd_halt(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_sleep(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_beep(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_lscpu(int argc, char **argv, struct stream *in, struct stream *out);
+int cmd_smp(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_lsmem(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_clear(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_color(int argc, char **argv, struct stream *in, struct stream *out);
@@ -120,6 +121,7 @@ int cmd_blkid(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_bcache(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_fdisk(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_gatofs(int argc, char **argv, struct stream *in, struct stream *out);
+int cmd_fat32(int argc, char **argv, struct stream *in, struct stream *out);
 int cmd_dd(int argc, char **argv, struct stream *in, struct stream *out);
 
 int cmd_vmm(int argc, char **argv, struct stream *in, struct stream *out);

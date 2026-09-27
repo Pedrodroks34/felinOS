@@ -25,7 +25,6 @@ struct ahci_cmd_header *cmd_headers[AHCI_MAX_PORTS];
 struct ahci_cmd_table *cmd_tables[AHCI_MAX_PORTS];
 struct ahci_fis *fis_areas[AHCI_MAX_PORTS];
 
-static void ahci_port_rebase(int port_num);
 static int ahci_port_start(volatile uint32_t *port_base, int port_num);
 static int ahci_port_stop(volatile uint32_t *port_base);
 static int ahci_port_wait_idle(volatile uint32_t *port_base, uint32_t timeout_ms);

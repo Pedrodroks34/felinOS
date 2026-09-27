@@ -13,4 +13,7 @@ PROG spin
 PROG count
 PROG launch
 PROG hello32
+PROG nc
+PROG wget
+PROG mmtest
 .section .note.GNU-stack,"",@progbits

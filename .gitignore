@@ -1,0 +1,16 @@
+# build artefacts
+*.o
+*.bin
+*.elf
+gato64.elf
+felinos.iso
+
+# generated images
+disk.img
+gatofs.img
+swap.img
+fat32.img
+
+# iso staging directory (only the checked-in grub config is tracked)
+iso/boot/gato.bin
+iso/boot/grub/eltorito.img

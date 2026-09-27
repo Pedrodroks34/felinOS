@@ -49,8 +49,6 @@
 #define SYS_GETEGID   41  /* getegid()                      */
 #define SYS_SETUID    42  /* setuid(uid)                    */
 #define SYS_SETGID    43  /* setgid(gid)                    */
-#define SYS_GETPID    6   /* getpid()                       */
-#define SYS_GETPPID   11  /* getppid()                      */
 #define SYS_GETTID    44  /* gettid()                       */
 #define SYS_TIMES     45  /* times(struct tms*)             */
 #define SYS_UNAME     46  /* uname(struct utsname*)         */
@@ -63,7 +61,6 @@
 #define SYS_CLOCK_GETTIME 53 /* clock_gettime(clk_id, timespec*) */
 #define SYS_CLOCK_SETTIME 54 /* clock_settime(clk_id, timespec*) */
 #define SYS_MMAP      55  /* mmap(addr, len, prot, flags, fd, off) */
-#define SYS_MUNMAP    27  /* munmap(addr, len)              */
 #define SYS_MPROTECT  56  /* mprotect(addr, len, prot)      */
 #define SYS_MSYNC     57  /* msync(addr, len, flags)        */
 #define SYS_MADVISE   58  /* madvise(addr, len, advice)     */
@@ -74,15 +71,10 @@
 #define SYS_FDATASYNC 63  /* fdatasync(fd)                  */
 #define SYS_TRUNCATE  64  /* truncate(path, length)         */
 #define SYS_FTRUNCATE 65  /* ftruncate(fd, length)          */
-#define SYS_GETCWD    22  /* getcwd(buf, size)              */
-#define SYS_CHDIR     21  /* chdir(path)                    */
 #define SYS_FCHDIR    66  /* fchdir(fd)                     */
-#define SYS_RENAME    20  /* rename(old, new)               */
-#define SYS_MKDIR     18  /* mkdir(path, mode)              */
 #define SYS_RMDIR     67  /* rmdir(path)                    */
 #define SYS_CREAT     68  /* creat(path, mode)              */
 #define SYS_LINK      69  /* link(oldpath, newpath)         */
-#define SYS_UNLINK    19  /* unlink(path)                   */
 #define SYS_SYMLINK   70  /* symlink(target, linkpath)      */
 #define SYS_READLINK  71  /* readlink(path, buf, bufsiz)    */
 #define SYS_CHMOD     72  /* chmod(path, mode)              */
@@ -91,12 +83,6 @@
 #define SYS_FCHOWN    75  /* fchown(fd, uid, gid)           */
 #define SYS_LCHOWN    76  /* lchown(path, uid, gid)         */
 #define SYS_UMASK     77  /* umask(mask)                    */
-#define SYS_GETUID    38  /* getuid()                       */
-#define SYS_GETGID    39  /* getgid()                       */
-#define SYS_SETUID    42  /* setuid(uid)                    */
-#define SYS_SETGID    43  /* setgid(gid)                    */
-#define SYS_GETEUID   40  /* geteuid()                      */
-#define SYS_GETEGID   41  /* getegid()                      */
 #define SYS_GETPGID   78  /* getpgid(pid)                   */
 #define SYS_SETPGID   79  /* setpgid(pid, pgid)             */
 #define SYS_GETSID    80  /* getsid(pid)                    */
@@ -107,8 +93,32 @@
 #define SYS_GETRESGID 85  /* getresgid(rgid, egid, sgid)    */
 #define SYS_SETRESUID 86  /* setresuid(ruid, euid, suid)    */
 #define SYS_SETRESGID 87  /* setresgid(rgid, egid, sgid)    */
-#define SYS_GETPGID   78  /* getpgid(pid)                   */
-#define SYS_SETPGID   79  /* setpgid(pid, pgid)             */
+#define SYS_SEND      88  /* send(fd, buf, len, flags)                  */
+#define SYS_RECV      89  /* recv(fd, buf, len, flags)                  */
+#define SYS_SENDTO    90  /* sendto(fd, buf, len, flags, sockaddr_in*)  */
+#define SYS_RECVFROM  91  /* recvfrom(fd, buf, len, flags, sockaddr_in*) */
+#define SYS_GETSOCKNAME 92 /* getsockname(fd, sockaddr_in*, addrlen)     */
+#define SYS_SETSOCKOPT 93  /* setsockopt(fd, level, optname, optval, optlen) */
+#define SYS_GETHOSTBYNAME 94 /* gethostbyname(name, char *addr_out) -> ip or -1 */
+#define SYS_GETIFADDR   95  /* getifaddr(struct k_ifinfo*)                */
+#define SYS_GETIFADDRS  96  /* getifaddrs(struct k_ifinfo*, int max) -> n  */
+
+struct k_ifinfo {
+    uint32_t ip;         /* host byte order, 0 when the link is down */
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns_server;
+    uint8_t mac[6];
+    uint8_t up;
+    uint8_t dhcp_bound;
+    char driver[16];
+    uint32_t rx_packets;
+    uint32_t tx_packets;
+    uint32_t rx_bytes;
+    uint32_t tx_bytes;
+    uint32_t rx_errors;
+    uint32_t tx_errors;
+};
 
 #define SIGHUP     1
 #define SIGINT     2
@@ -174,6 +184,53 @@ struct utsname {
     char machine[65];
     char domainname[65];
 };
+
+/* mmap() protection bits. */
+#define PROT_NONE  0
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4
+
+/* mmap() flags. */
+#define MAP_SHARED    0x0001
+#define MAP_PRIVATE   0x0002
+#define MAP_FIXED     0x0010
+#define MAP_ANONYMOUS 0x0020
+
+/* madvise() advice values. */
+#define MADV_NORMAL     0
+#define MADV_RANDOM     1
+#define MADV_SEQUENTIAL 2
+#define MADV_WILLNEED   3
+#define MADV_DONTNEED   4
+#define MADV_FREE       5
+
+/* clock_gettime() clock ids. */
+#define CLOCK_REALTIME           0
+#define CLOCK_MONOTONIC          1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_MONOTONIC_RAW      4
+#define CLOCK_BOOTTIME           7
+
+/* getrlimit()/setrlimit() resources. */
+#define RLIMIT_CPU     0
+#define RLIMIT_FSIZE   1
+#define RLIMIT_DATA    2
+#define RLIMIT_STACK   3
+#define RLIMIT_CORE    4
+#define RLIMIT_AS      9
+#define RLIMIT_NOFILE  7
+#define RLIMIT_NPROC   6
+
+/* fcntl() commands. */
+#define F_DUPFD   0
+#define F_GETFD   1
+#define F_SETFD   2
+#define F_GETFL   3
+#define F_SETFL   4
+#define F_SETSIZE 5
+#define F_GETLK   6
+#define F_SETLK   7
 
 #define USER_BASE      0x40000000u
 #define USER_HEAP_BASE 0x50000000u

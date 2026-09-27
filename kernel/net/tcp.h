@@ -60,6 +60,7 @@ int tcp_recv(struct tcp_pcb *pcb, void *buf, uint32_t len, uint32_t timeout_tick
 int tcp_close(struct tcp_pcb *pcb);
 int tcp_state_of(const struct tcp_pcb *pcb);
 uint16_t tcp_local_port(const struct tcp_pcb *pcb);
+int tcp_remote(const struct tcp_pcb *pcb, uint32_t *ip, uint16_t *port);
 const char *tcp_state_name(int state);
 
 #endif

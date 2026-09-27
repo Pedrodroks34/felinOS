@@ -466,6 +466,33 @@ static int ramfs_statfs(struct vfs_mount *m, struct vfs_statfs *sf) {
     return VFS_OK;
 }
 
+static int ramfs_truncate(struct vfs_file *f, uint64_t size) {
+    struct rnode *n = (struct rnode *)f->priv;
+
+    if (!n || n->type == VFS_DIR) {
+        return VFS_EISDIR;
+    }
+    if (size > RAMFS_MAX_FILE) {
+        return VFS_EFBIG;
+    }
+    if (size > n->size) {
+        /* Growing zero-fills the gap, as on Linux. */
+        if (ensure_capacity(n, (uint32_t)size + 1) < 0) {
+            return VFS_ENOSPC;
+        }
+        memset(n->data + n->size, 0, (size_t)(size - n->size));
+    }
+    n->size = (uint32_t)size;
+    if (n->data) {
+        n->data[n->size] = '\0';
+    }
+    if (f->pos > n->size) {
+        f->pos = n->size;
+    }
+    n->mtime = rtc_unix();
+    return 0;
+}
+
 const struct fs_ops ramfs_ops = {
     .name = "ramfs",
     .mount = ramfs_mount,
@@ -483,4 +510,5 @@ const struct fs_ops ramfs_ops = {
     .touch = ramfs_touch,
     .statfs = ramfs_statfs,
     .size = ramfs_size,
+    .truncate = ramfs_truncate,
 };

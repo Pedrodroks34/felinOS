@@ -1477,10 +1477,37 @@ int vfs_sync_file(struct vfs_file *f) {
 }
 
 int vfs_fcntl(struct vfs_file *f, int cmd, uint32_t arg) {
+    /* F_SETSIZE is the classic spelling of truncate() on a descriptor. */
+    if (cmd == F_SETSIZE) {
+        return vfs_ftruncate(f, (uint64_t)arg);
+    }
     if (!f || !f->mnt->ops->fcntl) {
         return VFS_ENOSYS;
     }
     return f->mnt->ops->fcntl(f, cmd, arg);
+}
+
+int vfs_ftruncate(struct vfs_file *f, uint64_t size) {
+    if (!f || !f->mnt || !f->mnt->ops->truncate) {
+        return VFS_ENOSYS;
+    }
+    if (!(f->flags & VFS_O_WRITE)) {
+        return VFS_EACCES;
+    }
+    return f->mnt->ops->truncate(f, size);
+}
+
+int vfs_truncate(const char *path, uint64_t size) {
+    struct vfs_file *f;
+    int r;
+
+    /* Truncating a file that does not exist is an error, not a create. */
+    if (vfs_open(path, VFS_O_WRITE, &f) < 0) {
+        return -1;
+    }
+    r = vfs_ftruncate(f, size);
+    vfs_close(f);
+    return r;
 }
 
 int vfs_ioctl(struct vfs_file *f, uint32_t request, uint32_t arg) {

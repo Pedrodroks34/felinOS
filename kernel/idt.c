@@ -157,6 +157,13 @@ void irq_uninstall_handler(int irq) {
     pic_set_mask(irq);
 }
 
+/* Defined further down, next to the rest of the APIC glue. */
+void isr50_handler(struct regs *r);
+void isr51_handler(struct regs *r);
+void isr52_handler(struct regs *r);
+void isr53_handler(struct regs *r);
+void isr255_handler(struct regs *r);
+
 void isr_handler(struct regs *r) {
     const char *name = (r->int_no < 32) ? exception_names[r->int_no] : "Unknown";
     uint32_t cr2 = 0;
@@ -164,6 +171,18 @@ void isr_handler(struct regs *r) {
     if (r->int_no == 128) {
         syscall_dispatch(r);
         return;
+    }
+
+    /* The APIC vectors share isr_common with the CPU exceptions, so they
+     * have to be recognised here. Without this the first timer tick lands
+     * in the panic path below. */
+    switch (r->int_no) {
+    case APIC_TIMER_VECTOR:   isr50_handler(r);  return;
+    case APIC_ERROR_VECTOR:   isr51_handler(r);  return;
+    case APIC_IPI_VECTOR:     isr52_handler(r);  return;
+    case APIC_RESCHED_VECTOR: isr53_handler(r);  return;
+    case APIC_SPURIOUS_VECTOR:isr255_handler(r); return;
+    default: break;
     }
 
     if (r->int_no == 14) {

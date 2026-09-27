@@ -974,6 +974,102 @@ int gatofs_write(int fd, const void *buf, uint32_t len) {
     return r;
 }
 
+/* Frees one data block and clears its map entry. bfree() touches the block
+ * bitmap through the metadata cache, so any buffer held across the call has
+ * to be re-fetched with cget() afterwards. */
+static void unmap_i(struct vinode *in, uint32_t idx) {
+    if (idx < NDIRECT) {
+        if (in->blk[idx]) {
+            bfree(in->blk[idx]);
+            in->blk[idx] = 0;
+            in->nblocks--;
+        }
+        return;
+    }
+    idx -= NDIRECT;
+    if (idx < PPB) {
+        uint32_t t = in->blk[IND_SLOT];
+        if (!t) return;
+        uint8_t *p = cget(t);
+        if (!p) return;
+        uint32_t b = ((const uint32_t *)p)[idx];
+        if (!b) return;
+        bfree(b);
+        p = cget(t);
+        if (!p) return;
+        ((uint32_t *)p)[idx] = 0;
+        cput(t);
+        in->nblocks--;
+        return;
+    }
+    idx -= PPB;
+    if (idx >= PPB * PPB) return;
+    uint32_t t1 = in->blk[DIND_SLOT];
+    if (!t1) return;
+    uint8_t *q = cget(t1);
+    if (!q) return;
+    uint32_t t2 = ((const uint32_t *)q)[idx / PPB];
+    if (!t2) return;
+    uint8_t *p = cget(t2);
+    if (!p) return;
+    uint32_t b = ((const uint32_t *)p)[idx % PPB];
+    if (!b) return;
+    bfree(b);
+    p = cget(t2);
+    if (!p) return;
+    ((uint32_t *)p)[idx % PPB] = 0;
+    cput(t2);
+    in->nblocks--;
+}
+
+/* True when an indirect block holds no live pointers, which means the block
+ * itself can go back to the free list. */
+static int table_empty(uint32_t t) {
+    uint8_t *p = cget(t);
+    if (!p) return 0;
+    const uint32_t *e = (const uint32_t *)p;
+    for (uint32_t i = 0; i < PPB; i++) {
+        if (e[i]) return 0;
+    }
+    return 1;
+}
+
+int gatofs_truncate(int fd, uint32_t size) {
+    struct vfd *f = getfd(fd);
+    if (!f || !(f->flags & VF_WRITE)) return GATOFS_EINVAL;
+
+    struct vinode in;
+    if (iread(f->ino, &in) < 0) return GATOFS_EIO;
+    if (in.type == GATOFS_DIR) return GATOFS_EISDIR;
+
+    if (size < in.size) {
+        /* Release every block that now sits entirely past the new end. A
+         * block that still holds a surviving byte is kept, so shrinking
+         * inside a block does not throw it away and reallocate it. */
+        uint32_t keep = (size + BS - 1) / BS;
+        uint32_t had = (in.size + BS - 1) / BS;
+        for (uint32_t i = keep; i < had; i++) {
+            unmap_i(&in, i);
+        }
+        if (in.blk[IND_SLOT] && table_empty(in.blk[IND_SLOT])) {
+            bfree(in.blk[IND_SLOT]);
+            in.blk[IND_SLOT] = 0;
+        }
+        if (in.blk[DIND_SLOT] && table_empty(in.blk[DIND_SLOT])) {
+            bfree(in.blk[DIND_SLOT]);
+            in.blk[DIND_SLOT] = 0;
+        }
+    }
+    /* Growing just moves the end: pread_i() already answers unallocated
+     * blocks with zeroes, so the hole costs nothing until it is written. */
+    in.size = size;
+    in.mtime = rtc_unix();
+    if (iwrite(f->ino, &in) < 0) return GATOFS_EIO;
+    if (f->pos > in.size) f->pos = in.size;
+    sb_flush();
+    return 0;
+}
+
 int gatofs_seek(int fd, uint32_t pos) {
     struct vfd *f = getfd(fd);
     if (!f) return GATOFS_EINVAL;

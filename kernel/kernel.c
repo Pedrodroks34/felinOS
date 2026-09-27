@@ -291,7 +291,6 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     for (int i = 0; i < ahci_device_count(); i++) {
         struct ahci_device *dev = ahci_get_device(i);
         if (!dev) continue;
-        struct mbr_partition parts[4];
         uint8_t sector[512];
         if (ahci_read_sectors(dev, 0, 1, sector) == 0 &&
             sector[510] == 0x55 && sector[511] == 0xAA) {

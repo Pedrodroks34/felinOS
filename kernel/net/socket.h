@@ -27,4 +27,15 @@ int socket_listen(struct vfs_file *f, int backlog);
 struct vfs_file *socket_accept(struct vfs_file *f, struct sockaddr_in *addr_out);
 int socket_is_socket(const struct vfs_file *f);
 
+/* Data transfer. timeout_ms of 0xFFFFFFFF blocks until a task is killable,
+ * any other value bounds the wait in milliseconds. */
+int socket_send(struct vfs_file *f, const void *buf, uint32_t len, int flags);
+int socket_recv(struct vfs_file *f, void *buf, uint32_t len, int flags);
+int socket_sendto(struct vfs_file *f, const void *buf, uint32_t len, int flags,
+                  const struct sockaddr_in *addr);
+int socket_recvfrom(struct vfs_file *f, void *buf, uint32_t len, int flags,
+                    struct sockaddr_in *addr_out);
+int socket_type(const struct vfs_file *f);
+uint16_t socket_local_port(const struct vfs_file *f);
+
 #endif

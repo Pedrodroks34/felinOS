@@ -87,6 +87,8 @@ struct vm_space *vmm_space_get(int index);
 
 void *vmm_alloc(uint32_t size, uint32_t flags, const char *name);
 void *vmm_alloc_at(uint32_t base, uint32_t size, uint32_t flags, const char *name);
+void *vmm_alloc_range(uint32_t lo, uint32_t hi, uint32_t size, uint32_t flags, const char *name);
+int vmm_protect_region(uint32_t base, uint32_t size, uint32_t add_flags, uint32_t clear_flags);
 void *vmm_map_physical(uint32_t phys, uint32_t size, uint32_t flags, const char *name);
 int vmm_free(void *ptr);
 int vmm_commit(uint32_t base, uint32_t size);

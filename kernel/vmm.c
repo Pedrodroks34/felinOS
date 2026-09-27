@@ -899,6 +899,59 @@ void *vmm_alloc_at(uint32_t base, uint32_t size, uint32_t flags, const char *nam
     return r;
 }
 
+/* Allocates from the first hole that fits in [lo, hi). mmap() uses this to
+ * place a mapping inside the user window instead of the kernel's vmalloc
+ * range. */
+void *vmm_alloc_range(uint32_t lo, uint32_t hi, uint32_t size, uint32_t flags, const char *name) {
+    if (!size || lo >= hi) {
+        return NULL;
+    }
+    size = (size + PAGE_SIZE - 1) & PAGE_MASK;
+    mutex_lock(&vmm_mtx);
+    uint32_t base = find_hole(current_space, size, lo & PAGE_MASK, hi & PAGE_MASK);
+    void *r = base ? vmm_alloc_at_l(base, size, flags, name) : NULL;
+    mutex_unlock(&vmm_mtx);
+    return r;
+}
+
+/* Adjusts the permissions of an existing mapping, for mprotect(). The region's
+ * behaviour flags and the already-present page table entries are both updated,
+ * so pages that were never touched pick the new permissions up when they fault
+ * in later. */
+int vmm_protect_region(uint32_t base, uint32_t size, uint32_t add_flags, uint32_t clear_flags) {
+    if (!size) {
+        return 0;
+    }
+    uint32_t pages = ((size + PAGE_SIZE - 1) & PAGE_MASK) / PAGE_SIZE;
+    int changed = 0;
+
+    mutex_lock(&vmm_mtx);
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t addr = (base & PAGE_MASK) + i * PAGE_SIZE;
+        struct vm_region *region = vmm_find_region_l(current_space, addr);
+        if (!region) {
+            continue;
+        }
+        region->flags = (region->flags | add_flags) & ~clear_flags;
+
+        uint32_t entry = paging_get_entry(addr);
+        if (entry & PAGE_PRESENT) {
+            entry &= ~(PAGE_RW | PAGE_USER);
+            if (region->flags & VM_WRITE) {
+                entry |= PAGE_RW;
+            }
+            if (region->flags & VM_USER) {
+                entry |= PAGE_USER;
+            }
+            paging_set_entry(addr, entry);
+            paging_invalidate(addr);
+        }
+        changed++;
+    }
+    mutex_unlock(&vmm_mtx);
+    return changed;
+}
+
 void *vmm_alloc(uint32_t size, uint32_t flags, const char *name) {
     mutex_lock(&vmm_mtx);
     void *r = vmm_alloc_l(size, flags, name);

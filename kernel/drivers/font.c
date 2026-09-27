@@ -117,7 +117,6 @@ void font_init(void) {
 
 void font_render_char(int x, int y, char c, uint32_t fg_color, uint32_t bg_color) {
     if (!system_font.loaded) return;
-    if ((unsigned char)c >= 256) return;
 
     struct font_glyph *glyph = &system_font.glyphs[(unsigned char)c];
     uint8_t *fb = fb_buffer();

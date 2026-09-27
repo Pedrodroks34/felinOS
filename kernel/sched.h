@@ -36,6 +36,10 @@ struct task {
     int nice;
     uint16_t uid;
     uint16_t gid;
+    uint16_t euid;
+    uint16_t egid;
+    uint16_t suid;
+    uint16_t sgid;
     uint16_t umask;
     int pgid;
     int sid;

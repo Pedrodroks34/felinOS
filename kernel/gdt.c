@@ -67,3 +67,12 @@ void gdt_install(void) {
 void tss_set_kernel_stack(uint64_t rsp0) {
     tss.rsp0 = rsp0;
 }
+
+/* Reloads the GDT and task register without rebuilding them. An application
+ * processor boots against the trampoline's own private GDT, which has no TSS
+ * and no ring 3 descriptors, so it has to pick up the kernel's before it can
+ * take a fault or return to user mode. */
+void gdt_reload(void) {
+    gdt_flush((uint64_t)(uintptr_t)&gp);
+    __asm__ volatile ("ltr %%ax" : : "a"((uint16_t)0x30));
+}

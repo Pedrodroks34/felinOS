@@ -10,6 +10,7 @@
 #define SEL_UCODE64 0x2B   /* ring 3, 64-bit long mode */
 
 void gdt_install(void);
+void gdt_reload(void);
 void tss_set_kernel_stack(uint64_t rsp0);
 
 #endif

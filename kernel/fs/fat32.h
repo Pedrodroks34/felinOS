@@ -119,4 +119,14 @@ int fat32_open(struct fat32_handle *h, const char *path, struct fat32_file *file
 int fat32_opendir(struct fat32_handle *h, const char *path, struct fat32_dir_entry *entries, int max_entries, int *count);
 int fat32_getinfo(struct fat32_handle *h, const char *path, struct fat32_dir_entry *entry);
 
+/* Writes an MBR with one FAT32 partition covering the whole disk, then
+ * formats it. total_sectors is the size of the disk in 512-byte sectors.
+ * Refuses a disk that already carries a partition table unless force is set,
+ * so a mistyped device is never destroyed silently. */
+int fat32_write_mbr(void *dev, int dev_type, uint32_t total_sectors);
+int fat32_format(void *dev, int dev_type, uint32_t partition_lba, uint32_t partition_sectors,
+                  const char *label, int force);
+/* Sector 0 is the MBR, so the volume starts at partition_lba + 1. */
+#define FAT32_PARTITION_LBA 1
+
 #endif

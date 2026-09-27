@@ -84,6 +84,19 @@ uint16_t tcp_local_port(const struct tcp_pcb *pcb) {
     return pcb->local_port;
 }
 
+int tcp_remote(const struct tcp_pcb *pcb, uint32_t *ip, uint16_t *port) {
+    if (!pcb || !pcb->in_use) {
+        return 0;
+    }
+    if (ip) {
+        *ip = pcb->remote_ip;
+    }
+    if (port) {
+        *port = pcb->remote_port;
+    }
+    return 1;
+}
+
 static int port_in_use(uint16_t port) {
     for (int i = 0; i < TCP_MAX_PCB; i++) {
         if (pcbs[i].in_use && pcbs[i].local_port == port) {

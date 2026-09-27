@@ -20,7 +20,8 @@ UFLAGS = -std=gnu11 -O2 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -f
 C_SOURCES = $(wildcard kernel/*.c) $(wildcard kernel/lib/*.c) \
             $(wildcard kernel/drivers/*.c) $(wildcard kernel/fs/*.c) \
             $(wildcard kernel/sh/*.c) $(wildcard kernel/net/*.c)
-ASM_SOURCES = boot/boot.s kernel/isr.s kernel/gdt_flush.s kernel/user_asm.s kernel/sched_asm.s kernel/fork_asm.s kernel/progs.s
+ASM_SOURCES = boot/boot.s kernel/isr.s kernel/gdt_flush.s kernel/user_asm.s kernel/sched_asm.s \
+              kernel/fork_asm.s kernel/ap_trampoline.s kernel/progs.s
 
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.s=.o)
 
@@ -32,6 +33,24 @@ VDISK = gatofs.img
 VDISK_MB ?= 4096
 SWAP = swap.img
 SWAP_MB ?= 64
+FATDISK = fat32.img
+FATDISK_MB ?= 64
+
+# e1000 is the NIC Gato speaks to. The 'user' backend gives the guest a
+# private network reachable from the host on 10.0.2.x, with DNS forwarded to
+# the host, so dhcp, dns, wget and nc work out of the box. Override with
+# NETDEV_BACKEND=socket to join a real LAN instead.
+NETDEV_BACKEND ?= user
+QEMU_NET = -netdev $(NETDEV_BACKEND),id=net0 -device e1000,netdev=net0
+
+# index 0 is the GatoFS root, 1 the secondary GatoFS volume, 2 the FAT32 test
+# disk and 3 the swap area.
+QEMU_DISKS = -drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+             -drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+             -drive file=$(FATDISK),format=raw,if=ide,index=2,media=disk \
+             -drive file=$(SWAP),format=raw,if=ide,index=3,media=disk
+
+QEMU_COMMON = -m 64M $(QEMU_DISKS) $(QEMU_NET)
 
 all: $(ISO)
 
@@ -41,9 +60,11 @@ all: $(ISO)
 %.o: %.s
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-USER_PROGS = user/hello user/cat user/crash user/spin user/count user/launch user/hello32
-USER_LIBC = user/malloc.c user/string.c user/stdio.c user/signal.c
-USER_LIBC_HDRS = user/usys.h user/string.h user/malloc.h user/stdio.h user/stat.h user/signal.h kernel/syscall.h
+USER_PROGS = user/hello user/cat user/crash user/spin user/count user/launch user/hello32 \
+             user/nc user/wget user/mmtest
+USER_LIBC = user/malloc.c user/string.c user/stdio.c user/signal.c user/net.c
+USER_LIBC_HDRS = user/usys.h user/string.h user/malloc.h user/stdio.h user/stat.h \
+                 user/signal.h user/net.h kernel/syscall.h
 
 user/hello32.elf: user/hello.c user/crt0_32.s $(USER_LIBC) $(USER_LIBC_HDRS) user/user.ld
 	$(CC) -m32 $(UFLAGS) -Wl,-m,elf_i386 user/crt0_32.s $(USER_LIBC) $< -o $@
@@ -77,44 +98,39 @@ $(VDISK):
 $(SWAP):
 	truncate -s $(SWAP_MB)M $(SWAP)
 
-run: $(ISO) $(DISK) $(VDISK) $(SWAP)
-	qemu-system-x86_64 -cdrom $(ISO) -m 64M -boot d \
-		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
-		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
-		-serial stdio
+$(FATDISK):
+	truncate -s $(FATDISK_MB)M $(FATDISK)
 
-run-kernel: $(BIN) $(DISK) $(VDISK) $(SWAP)
-	qemu-system-x86_64 -kernel $(BIN) -m 64M \
-		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
-		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
-		-serial stdio
+IMAGES = $(DISK) $(VDISK) $(SWAP) $(FATDISK)
 
-run-serial: $(BIN) $(DISK) $(VDISK) $(SWAP)
-	qemu-system-x86_64 -kernel $(BIN) -m 64M \
-		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
-		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
-		-display none -serial stdio
+run: $(ISO) $(IMAGES)
+	qemu-system-x86_64 -cdrom $(ISO) -boot d $(QEMU_COMMON) -serial stdio
+
+run-kernel: $(BIN) $(IMAGES)
+	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -serial stdio
+
+run-serial: $(BIN) $(IMAGES)
+	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -display none -serial stdio
+
+# Boots with two cores so the SMP path, per-CPU run queues and `smp` output
+# are exercised.
+run-smp: $(BIN) $(IMAGES)
+	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -smp 4 -serial stdio
 
 clean:
 	rm -f $(OBJS) $(KELF) $(BIN) $(ISO) user/*.elf
 	rm -rf iso/boot/gato.bin
 
 distclean: clean
-	rm -f $(DISK) $(VDISK) $(SWAP)
+	rm -f $(DISK) $(VDISK) $(SWAP) $(FATDISK)
 
-test: $(BIN) $(DISK) $(VDISK) $(SWAP)
+test: $(BIN) $(IMAGES)
 	@echo "Running automated tests in QEMU..."
-	@qemu-system-x86_64 -kernel $(BIN) -m 64M \
-		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
-		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+	@qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) \
 		-display none -serial stdio \
 		-append "test" \
 		-monitor none \
 		-no-reboot \
 		-watchdog-action reset
 
-.PHONY: all run run-kernel run-serial clean distclean test
+.PHONY: all run run-kernel run-serial run-smp clean distclean test

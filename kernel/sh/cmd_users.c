@@ -215,8 +215,8 @@ static int passwd_set_password(const char *name, const char *newpass) {
 static void apply_identity(const struct passwd_entry *e) {
     struct task *t = sched_current();
 
-    t->uid = e->uid;
-    t->gid = e->gid;
+    t->uid = t->euid = t->suid = e->uid;
+    t->gid = t->egid = t->sgid = e->gid;
     shell_setenv("USER", e->name);
     shell_setenv("HOME", e->home);
     vfs_chdir(e->home);

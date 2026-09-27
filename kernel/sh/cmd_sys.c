@@ -8,6 +8,7 @@
 #include "drivers/rtc.h"
 #include "drivers/pit.h"
 #include "drivers/cpu.h"
+#include "drivers/apic.h"
 #include "drivers/power.h"
 #include "drivers/acpi.h"
 #include "drivers/speaker.h"
@@ -734,7 +735,7 @@ int cmd_lscpu(int argc, char **argv, struct stream *in, struct stream *out) {
     st_printf(out, "%-16s %u\n", "Model:", cpu_model());
     st_printf(out, "%-16s %u\n", "Stepping:", cpu_stepping());
     st_printf(out, "%-16s %s\n", "Mode:", "64-bit long");
-    st_printf(out, "%-16s %u\n", "CPUs:", 1u);
+    st_printf(out, "%-16s %u\n", "CPUs:", (uint32_t)smp_cpu_count());
     st_printf(out, "%-16s ", "Flags:");
 
     int column = 17;
@@ -822,5 +823,49 @@ int cmd_halt(int argc, char **argv, struct stream *in, struct stream *out) {
 int cmd_simplecc(int argc, char **argv, struct stream *in, struct stream *out) {
     (void)argc; (void)argv; (void)in; (void)out;
     simple_compile();
+    return 0;
+}
+
+int cmd_smp(int argc, char **argv, struct stream *in, struct stream *out) {
+    (void)argc; (void)argv; (void)in;
+
+    if (!apic_is_present()) {
+        st_puts(out, "No local APIC on this processor: running uniprocessor.\n");
+        return 0;
+    }
+
+    int total = smp_cpu_count();
+    int online = 0;
+    for (int i = 0; i < total; i++) {
+        if (smp_cpu_online(i)) online++;
+    }
+
+    st_printf(out, "Local APIC at 0x%08x\n", apic_get_base());
+    if (apic_get_ioapic_base()) {
+        st_printf(out, "I/O APIC   at 0x%08x, ID %u\n",
+                  apic_get_ioapic_base(), apic_get_ioapic_id());
+    }
+    st_printf(out, "%d processor(s) in the MADT, %d online, this one is %s\n\n",
+              total, online, smp_is_bsp() ? "the bootstrap processor" : "an application processor");
+
+    st_printf(out, "%4s %6s %-10s %-9s %s\n", "CPU", "APIC", "ROLE", "STATE", "NOTE");
+    for (int i = 0; i < total; i++) {
+        const char *state;
+        const char *note = "";
+        if (smp_cpu_online(i)) {
+            state = "online";
+        } else if (smp_cpu_detected(i)) {
+            state = "offline";
+            note = "did not answer INIT/SIPI";
+        } else {
+            state = "absent";
+        }
+        st_printf(out, "%4d %6d %-10s %-9s %s\n", i, smp_cpu_apic_id(i),
+                  smp_cpu_is_bsp(i) ? "bootstrap" : "app", state, note);
+    }
+
+    st_puts(out, "\nThe scheduler still has a single run queue owned by the bootstrap\n"
+                 "processor, so the application processors are online and idle:\n"
+                 "they take interrupts but do not run tasks yet.\n");
     return 0;
 }

@@ -35,21 +35,25 @@
 #define APIC_SVR_ENABLE     0x100
 #define APIC_SVR_FOCUS_PROC 0x200
 
-/* Interrupt Command Register bits */
+/* Interrupt Command Register bits.
+ *
+ * ICR Low layout: bits 0-7 vector, 8-10 delivery mode, 11 destination mode,
+ * 12 delivery status (read-only), 13 level, 14 trigger, 18-19 destination
+ * shorthand. ICR High holds the physical destination in bits 24-31. */
 #define APIC_ICR_VECTOR     0x000000FF
 #define APIC_ICR_DM_FIXED   0x00000000
-#define APIC_ICR_DM_LOWPRI  0x00001000
-#define APIC_ICR_DM_SMI     0x00002000
-#define APIC_ICR_DM_NMI     0x00004000
-#define APIC_ICR_DM_INIT    0x00005000
-#define APIC_ICR_DM_SIPI    0x00006000
+#define APIC_ICR_DM_LOWPRI  0x00000300
+#define APIC_ICR_DM_SMI     0x00000500
+#define APIC_ICR_DM_NMI     0x00000400
+#define APIC_ICR_DM_INIT    0x00000600
+#define APIC_ICR_DM_SIPI    0x00000700
 #define APIC_ICR_DEST_MODE  0x00000800
-#define APIC_ICR_LEVEL     0x00004000
-#define APIC_ICR_ASSERT    0x00004000
-#define APIC_ICR_DEASSERT  0x00000000
-#define APIC_ICR_DEST_SHORTHAND_NONE 0x00000000
-#define APIC_ICR_DEST_SHORTHAND_SELF 0x00040000
-#define APIC_ICR_DEST_SHORTHAND_ALL   0x00080000
+#define APIC_ICR_LEVEL      0x00002000  /* INIT: 0 = assert, 1 = deassert */
+#define APIC_ICR_TRIGGER    0x00004000  /* INIT: 0 = edge, 1 = level */
+#define APIC_ICR_DELIVSTAT  0x00001000
+#define APIC_ICR_DEST_SHORTHAND_NONE     0x00000000
+#define APIC_ICR_DEST_SHORTHAND_SELF     0x00040000
+#define APIC_ICR_DEST_SHORTHAND_ALL      0x00080000
 #define APIC_ICR_DEST_SHORTHAND_BUT_SELF 0x000C0000
 
 /* LVT bits */
@@ -74,18 +78,21 @@
 #define IOAPIC_REG_REDIR_BASE 0x10
 #define IOAPIC_MAX_IRQS     24
 
-/* I/O APIC Redirection Table bits */
+/* I/O APIC Redirection Table entry bits: 0-7 vector, 8-10 delivery mode,
+ * 11 destination mode, 13 delivery status (read-only), 15 level, 16 active
+ * low, 17 masked, 18-31 destination (logical mode). */
 #define IOAPIC_REDIR_VECTOR     0x000000FF
 #define IOAPIC_REDIR_DM_FIXED   0x00000000
-#define IOAPIC_REDIR_DM_LOWPRI  0x00002000
-#define IOAPIC_REDIR_DM_SMI     0x00004000
-#define IOAPIC_REDIR_DM_NMI     0x00008000
-#define IOAPIC_REDIR_DM_INIT    0x00005000
+#define IOAPIC_REDIR_DM_LOWPRI  0x00000300
+#define IOAPIC_REDIR_DM_NMI     0x00000400
+#define IOAPIC_REDIR_DM_SMI     0x00000500
+#define IOAPIC_REDIR_DM_INIT    0x00000600
 #define IOAPIC_REDIR_DM_LOGICAL 0x00000800
 #define IOAPIC_REDIR_DM_PHYSICAL 0x00000000
 #define IOAPIC_REDIR_DM_PENDING 0x00001000
-#define IOAPIC_REDIR_DM_MASKED  0x00010000
-#define IOAPIC_REDIR_DM_TRIGGER 0x00004000
+#define IOAPIC_REDIR_DM_TRIGGER 0x00008000  /* 0 = edge, 1 = level */
+#define IOAPIC_REDIR_ACTIVE_LOW 0x00010000
+#define IOAPIC_REDIR_DM_MASKED  0x00020000
 
 /* Interrupt vectors */
 #define APIC_TIMER_VECTOR   0x32
@@ -143,6 +150,10 @@ void smp_init(void);
 void smp_boot_aps(void);
 int smp_get_apic_id(void);
 int smp_cpu_count(void);
+int smp_cpu_online(int index);
+int smp_cpu_detected(int index);
+int smp_cpu_apic_id(int index);
+int smp_cpu_is_bsp(int index);
 int smp_is_bsp(void);
 void smp_send_reschedule_ipi(void);
 
