@@ -148,8 +148,10 @@ run-efi: $(ISO) $(IMAGES)
 		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
 		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
 		-serial stdio
-
 run-kernel: $(BIN) $(IMAGES)
+	@echo "NOTE: run-kernel is broken on QEMU 10.2+ due to firmware SMM bug with 32-bit ELF kernels."
+	@echo "Use 'make run-efi' instead (works perfectly), or install grub-pc-bin for BIOS boot."
+	@echo "Attempting run-kernel anyway (will likely hang in SMM)..."
 	qemu-system-x86_64 -kernel $(BIN) \
 		-m 64M $(QEMU_NET) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
