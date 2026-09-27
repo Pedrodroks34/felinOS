@@ -1346,6 +1346,266 @@ void syscall_dispatch(struct regs *r) {
     case SYS_CONNECT: ret = sys_connect(r); break;
     case SYS_LISTEN:  ret = sys_listen(r); break;
     case SYS_ACCEPT:  ret = sys_accept(r); break;
+    case SYS_GETUID:  ret = sched_current()->uid; break;
+    case SYS_GETGID:  ret = sched_current()->gid; break;
+    case SYS_GETEUID: ret = sched_current()->uid; break;
+    case SYS_GETEGID: ret = sched_current()->gid; break;
+    case SYS_SETUID:  sched_current()->uid = (uint16_t)a1; ret = 0; break;
+    case SYS_SETGID:  sched_current()->gid = (uint16_t)a1; ret = 0; break;
+    case SYS_GETTID:  ret = sched_current()->pid; break;
+    case SYS_UNAME: {
+        char *buf = (char *)(uintptr_t)a1;
+        if (uptr_ok(a1, 64)) {
+            strncpy(buf, "FelinOS\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 64);
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_GETTIMEOFDAY: {
+        struct timeval *tv = (struct timeval *)(uintptr_t)a1;
+        if (uptr_ok(a1, sizeof(struct timeval))) {
+            tv->tv_sec = rtc_unix();
+            tv->tv_usec = 0;
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_NANOSLEEP: {
+        uint32_t req = a1, rem = arg2(r);
+        if (uptr_ok(req, 8)) {
+            uint32_t ms = *(uint32_t *)(uintptr_t)req;
+            sleep_ms(ms);
+            if (rem && uptr_ok(rem, 8)) {
+                *(uint32_t *)(uintptr_t)rem = 0;
+                *(uint32_t *)(uintptr_t)(rem + 4) = 0;
+            }
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_GETDENTS: {
+        int fd = (int)a1;
+        char *buf = (char *)(uintptr_t)arg2(r);
+        uint32_t count = arg3(r);
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd] && uptr_ok(arg2(r), count)) {
+            ret = vfs_readdir_fd(p->fds[fd], buf, count);
+        }
+        break;
+    }
+    case SYS_FCNTL: {
+        int fd = (int)a1;
+        int cmd = (int)arg2(r);
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_fcntl(p->fds[fd], cmd, arg3(r));
+        }
+        break;
+    }
+    case SYS_IOCTL: {
+        int fd = (int)a1;
+        uint32_t request = arg2(r);
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_ioctl(p->fds[fd], request, arg3(r));
+        }
+        break;
+    }
+    case SYS_FSYNC:
+    case SYS_FDATASYNC: {
+        int fd = (int)a1;
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_sync_file(p->fds[fd]);
+        }
+        break;
+    }
+    case SYS_FCHDIR: {
+        int fd = (int)a1;
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_fchdir(p->fds[fd]);
+        }
+        break;
+    }
+    case SYS_CREAT: {
+        char *path = (char *)(uintptr_t)a1;
+        if (uptr_ok(a1, 256)) {
+            struct vfs_file *f;
+            ret = vfs_open(path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC, &f);
+            if (ret >= 0) {
+                int slot = -1;
+                for (int i = 0; i < MAX_FDS; i++) {
+                    if (!p->fds[i]) {
+                        slot = i;
+                        break;
+                    }
+                }
+                if (slot >= 0) {
+                    p->fds[slot] = f;
+                    ret = slot;
+                } else {
+                    vfs_close(f);
+                    ret = -1;
+                }
+            }
+        }
+        break;
+    }
+    case SYS_LINK: {
+        char *old = (char *)(uintptr_t)a1;
+        char *new = (char *)(uintptr_t)arg2(r);
+        if (uptr_ok(a1, 256) && uptr_ok(arg2(r), 256)) {
+            ret = vfs_link(old, new);
+        }
+        break;
+    }
+    case SYS_SYMLINK: {
+        char *target = (char *)(uintptr_t)a1;
+        char *linkpath = (char *)(uintptr_t)arg2(r);
+        if (uptr_ok(a1, 256) && uptr_ok(arg2(r), 256)) {
+            ret = vfs_symlink(target, linkpath);
+        }
+        break;
+    }
+    case SYS_READLINK: {
+        char *path = (char *)(uintptr_t)a1;
+        char *buf = (char *)(uintptr_t)arg2(r);
+        uint32_t bufsiz = arg3(r);
+        if (uptr_ok(a1, 256) && uptr_ok(arg2(r), bufsiz)) {
+            ret = vfs_readlink(path, buf, bufsiz);
+        }
+        break;
+    }
+    case SYS_CHMOD: {
+        char *path = (char *)(uintptr_t)a1;
+        uint16_t mode = (uint16_t)arg2(r);
+        if (uptr_ok(a1, 256)) {
+            ret = vfs_chmod(path, mode);
+        }
+        break;
+    }
+    case SYS_FCHMOD: {
+        int fd = (int)a1;
+        uint16_t mode = (uint16_t)arg2(r);
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_fchmod(p->fds[fd], mode);
+        }
+        break;
+    }
+    case SYS_CHOWN: {
+        char *path = (char *)(uintptr_t)a1;
+        uint16_t uid = (uint16_t)arg2(r);
+        uint16_t gid = (uint16_t)arg3(r);
+        if (uptr_ok(a1, 256)) {
+            ret = vfs_chown(path, uid, gid);
+        }
+        break;
+    }
+    case SYS_FCHOWN: {
+        int fd = (int)a1;
+        uint16_t uid = (uint16_t)arg2(r);
+        uint16_t gid = (uint16_t)arg3(r);
+        if (fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            ret = vfs_fchown(p->fds[fd], uid, gid);
+        }
+        break;
+    }
+    case SYS_LCHOWN: {
+        char *path = (char *)(uintptr_t)a1;
+        uint16_t uid = (uint16_t)arg2(r);
+        uint16_t gid = (uint16_t)arg3(r);
+        if (uptr_ok(a1, 256)) {
+            ret = vfs_lchown(path, uid, gid);
+        }
+        break;
+    }
+    case SYS_UMASK: {
+        ret = sched_current()->umask;
+        sched_current()->umask = (uint16_t)a1;
+        break;
+    }
+    case SYS_GETPGID: {
+        int pid = (int)a1;
+        struct task *t = task_find(pid);
+        ret = t ? t->pgid : -1;
+        break;
+    }
+    case SYS_SETPGID: {
+        int pid = (int)a1;
+        int pgid = (int)arg2(r);
+        struct task *t = task_find(pid);
+        if (t) {
+            t->pgid = pgid;
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_GETSID: {
+        int pid = (int)a1;
+        struct task *t = task_find(pid);
+        ret = t ? t->sid : -1;
+        break;
+    }
+    case SYS_SETSID: {
+        struct task *t = sched_current();
+        t->sid = t->pid;
+        t->pgid = t->pid;
+        ret = t->sid;
+        break;
+    }
+    case SYS_GETGROUPS: {
+        int size = (int)a1;
+        uint16_t *list = (uint16_t *)(uintptr_t)arg2(r);
+        if (size <= 0 || !list || !uptr_ok(arg2(r), size * 2)) break;
+        list[0] = sched_current()->gid;
+        ret = 1;
+        break;
+    }
+    case SYS_SETGROUPS: {
+        int size = (int)a1;
+        uint16_t *list = (uint16_t *)(uintptr_t)arg2(r);
+        if (size > 0 && list && uptr_ok(arg2(r), size * 2)) {
+            sched_current()->gid = list[0];
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_GETRESUID: {
+        uint16_t *ruid = (uint16_t *)(uintptr_t)a1;
+        uint16_t *euid = (uint16_t *)(uintptr_t)arg2(r);
+        uint16_t *suid = (uint16_t *)(uintptr_t)arg3(r);
+        if (uptr_ok(a1, 2) && uptr_ok(arg2(r), 2) && uptr_ok(arg3(r), 2)) {
+            *ruid = sched_current()->uid;
+            *euid = sched_current()->uid;
+            *suid = sched_current()->uid;
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_GETRESGID: {
+        uint16_t *rgid = (uint16_t *)(uintptr_t)a1;
+        uint16_t *egid = (uint16_t *)(uintptr_t)arg2(r);
+        uint16_t *sgid = (uint16_t *)(uintptr_t)arg3(r);
+        if (uptr_ok(a1, 2) && uptr_ok(arg2(r), 2) && uptr_ok(arg3(r), 2)) {
+            *rgid = sched_current()->gid;
+            *egid = sched_current()->gid;
+            *sgid = sched_current()->gid;
+            ret = 0;
+        }
+        break;
+    }
+    case SYS_SETRESUID: {
+        uint16_t ruid = (uint16_t)a1;
+        uint16_t euid = (uint16_t)arg2(r);
+        uint16_t suid = (uint16_t)arg3(r);
+        sched_current()->uid = ruid;
+        ret = 0;
+        break;
+    }
+    case SYS_SETRESGID: {
+        uint16_t rgid = (uint16_t)a1;
+        uint16_t egid = (uint16_t)arg2(r);
+        uint16_t sgid = (uint16_t)arg3(r);
+        sched_current()->gid = rgid;
+        ret = 0;
+        break;
+    }
     case SYS_SBRK: {
         int32_t inc = (int32_t)a1;
         uint32_t nb = p->brk + (uint32_t)inc;

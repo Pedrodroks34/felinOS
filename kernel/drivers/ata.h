@@ -18,6 +18,7 @@ struct ata_device {
     uint16_t ctrl_base;
     uint16_t capabilities;
     uint8_t lba48;
+    uint8_t dma_supported;
     uint32_t sectors;
     char name[8];
     char model[41];

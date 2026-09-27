@@ -157,7 +157,9 @@ static const struct command commands[] = {
     { "ifconfig", "show or set the network interface", "ifconfig [ip netmask [gateway]]", cmd_ifconfig },
     { "ping", "send ICMP echo requests to a host", "ping <host> [count]", cmd_ping },
     { "dhcp", "obtain an address lease via DHCP", "dhcp", cmd_dhcp },
-    { "dns", "resolve a hostname to an IPv4 address", "dns <hostname>", cmd_dns }
+    { "dns", "resolve a hostname to an IPv4 address", "dns <hostname>", cmd_dns },
+    { "simplecc", "simple C compiler", "simplecc", cmd_simplecc },
+    { "test", "run automated test suite", "test", cmd_test }
 };
 
 static const int command_count = (int)(sizeof(commands) / sizeof(commands[0]));

@@ -24,6 +24,18 @@ struct acpi_table_ref {
     uint32_t length;
 };
 
+struct acpi_header {
+    char signature[4];
+    uint32_t length;
+    uint8_t revision;
+    uint8_t checksum;
+    char oem_id[6];
+    char oem_table_id[8];
+    uint32_t oem_revision;
+    uint32_t creator_id;
+    uint32_t creator_revision;
+} __attribute__((packed));
+
 struct acpi_info {
     int present;
     uint8_t rsdp_revision;

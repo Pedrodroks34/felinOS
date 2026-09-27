@@ -1469,6 +1469,134 @@ int vfs_sync(void) {
     return r;
 }
 
+int vfs_sync_file(struct vfs_file *f) {
+    if (!f || !f->mnt->ops->sync) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->sync(f->mnt);
+}
+
+int vfs_fcntl(struct vfs_file *f, int cmd, uint32_t arg) {
+    if (!f || !f->mnt->ops->fcntl) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->fcntl(f, cmd, arg);
+}
+
+int vfs_ioctl(struct vfs_file *f, uint32_t request, uint32_t arg) {
+    if (!f || !f->mnt->ops->ioctl) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->ioctl(f, request, arg);
+}
+
+int vfs_getcwd_buf(char *buf, uint32_t size) {
+    mutex_lock(&vfs_mtx);
+    int r = VFS_ENAMETOOLONG;
+    if (strlen(cwd) + 1 <= size) {
+        strcpy(buf, cwd);
+        r = VFS_OK;
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+int vfs_fchdir(struct vfs_file *f) {
+    if (!f || !f->mnt->ops->fchdir) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->fchdir(f);
+}
+
+int vfs_link(const char *oldpath, const char *newpath) {
+    mutex_lock(&vfs_mtx);
+    int r = VFS_ENOSYS;
+    char abs_old[VFS_PATH_MAX], abs_new[VFS_PATH_MAX];
+    struct vfs_mount *m_old, *m_new;
+    const char *rel_old, *rel_new;
+    if (vfs_normalize(oldpath, abs_old, sizeof(abs_old)) == 0 &&
+        vfs_normalize(newpath, abs_new, sizeof(abs_new)) == 0) {
+        m_old = find_mount(abs_old, &rel_old);
+        m_new = find_mount(abs_new, &rel_new);
+        if (m_old && m_new && m_old == m_new && m_old->ops->link) {
+            r = m_old->ops->link(m_old, rel_old, rel_new);
+        } else {
+            r = VFS_EXDEV;
+        }
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+int vfs_symlink(const char *target, const char *linkpath) {
+    mutex_lock(&vfs_mtx);
+    int r = VFS_ENOSYS;
+    char abs_new[VFS_PATH_MAX];
+    struct vfs_mount *m;
+    const char *rel;
+    if (vfs_normalize(linkpath, abs_new, sizeof(abs_new)) == 0) {
+        m = find_mount(abs_new, &rel);
+        if (m && m->ops->symlink) {
+            r = m->ops->symlink(m, target, rel);
+        }
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+int vfs_readlink(const char *path, char *buf, uint32_t bufsiz) {
+    mutex_lock(&vfs_mtx);
+    int r = VFS_ENOSYS;
+    char abs[VFS_PATH_MAX];
+    struct vfs_mount *m;
+    const char *rel;
+    if (vfs_normalize(path, abs, sizeof(abs)) == 0) {
+        m = find_mount(abs, &rel);
+        if (m && m->ops->readlink) {
+            r = m->ops->readlink(m, rel, buf, bufsiz);
+        }
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+int vfs_fchmod(struct vfs_file *f, uint16_t mode) {
+    if (!f || !f->mnt->ops->fchmod) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->fchmod(f, mode);
+}
+
+int vfs_fchown(struct vfs_file *f, uint16_t uid, uint16_t gid) {
+    if (!f || !f->mnt->ops->fchown) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->fchown(f, uid, gid);
+}
+
+int vfs_lchown(const char *path, uint16_t uid, uint16_t gid) {
+    mutex_lock(&vfs_mtx);
+    int r = VFS_ENOSYS;
+    char abs[VFS_PATH_MAX];
+    struct vfs_mount *m;
+    const char *rel;
+    if (vfs_normalize(path, abs, sizeof(abs)) == 0) {
+        m = find_mount(abs, &rel);
+        if (m && m->ops->lchown) {
+            r = m->ops->lchown(m, rel, uid, gid);
+        }
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+int vfs_readdir_fd(struct vfs_file *f, char *buf, uint32_t count) {
+    if (!f || !f->mnt->ops->readdir) {
+        return VFS_ENOSYS;
+    }
+    return f->mnt->ops->readdir(f->mnt, NULL, (vfs_dir_cb)buf, (void *)count);
+}
+
 
 void vfs_file_ref(struct vfs_file *f) {
     __atomic_add_fetch(&f->refs, 1, __ATOMIC_SEQ_CST);

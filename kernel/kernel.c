@@ -21,6 +21,7 @@
 #include "drivers/ata.h"
 #include "drivers/ahci.h"
 #include "drivers/apic.h"
+#include "drivers/font.h"
 #include "drivers/pci.h"
 #include "drivers/acpi.h"
 #include "drivers/cpu.h"
@@ -41,6 +42,8 @@
 #include "net/udp.h"
 #include "net/tcp.h"
 #include "net/socket.h"
+
+extern void ap_startup(void);
 
 static void banner(void) {
     vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
@@ -105,6 +108,15 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     pic_remap();
     boot_step("interrupt table", "32 exceptions, 16 hardware IRQs");
 
+    apic_init();
+    if (apic_is_present()) {
+        snprintf(detail, sizeof(detail), "local APIC at 0x%08x, %u CPU(s)",
+                 apic_get_base(), smp_cpu_count());
+    } else {
+        snprintf(detail, sizeof(detail), "not present, using PIC");
+    }
+    boot_step("apic", detail);
+
     system_init((magic == MULTIBOOT_BOOTLOADER_MAGIC) ? mbi : NULL);
     snprintf(detail, sizeof(detail), "%u KB reported by the bootloader", system_total_kb());
     boot_step("memory map", detail);
@@ -148,6 +160,9 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
 
     fb_init();
     boot_step("framebuffer", "320x200 256-color at 0xA0000, inactive (VGA text still active)");
+
+    font_init();
+    boot_step("font renderer", "8x16 bitmap font for framebuffer");
 
     if (serial_available()) {
         boot_step("serial console", "COM1 at 115200 baud, input and output");
@@ -196,6 +211,9 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
         boot_step("acpi", detail);
     }
 
+    smp_init();
+    smp_boot_aps();
+
     bcache_init();
     boot_step("buffer cache", "4 MB, 1024 lines of 4 KB over the ATA layer");
 
@@ -218,15 +236,6 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
         snprintf(detail, sizeof(detail), "no SATA devices");
     }
     boot_step("ahci controller", detail);
-
-    apic_init();
-    if (apic_is_present()) {
-        snprintf(detail, sizeof(detail), "local APIC at 0x%08x, %u CPU(s)",
-                 apic_get_base(), smp_cpu_count());
-    } else {
-        snprintf(detail, sizeof(detail), "not present, using PIC");
-    }
-    boot_step("apic", detail);
 
     fat32_init();
     boot_step("fat32", "FAT32 reader ready for host file exchange");
@@ -260,6 +269,49 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     vfs_mount("devfs", NULL, "/dev");
     vfs_mount("procfs", NULL, "/proc");
     vfs_mount("ramfs", NULL, "/tmp");
+
+    for (int i = 0; i < ata_device_count(); i++) {
+        struct ata_device *dev = ata_get_device(i);
+        if (!dev) continue;
+        struct mbr_partition parts[4];
+        int np = ata_read_partitions(dev, parts, 4);
+        for (int p = 0; p < np; p++) {
+            if (parts[p].type == 0x0B || parts[p].type == 0x0C) {
+                char mnt[16];
+                snprintf(mnt, sizeof(mnt), "/mnt/fat%d", i * 4 + p);
+                vfs_mkpath(mnt);
+                struct fat32_handle *fh = kmalloc(sizeof(struct fat32_handle));
+                if (fh && fat32_mount(fh, 0, parts[p].lba_start) == 0) {
+                    klog("fat32: mounted %s partition %d on %s", dev->name, p, mnt);
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < ahci_device_count(); i++) {
+        struct ahci_device *dev = ahci_get_device(i);
+        if (!dev) continue;
+        struct mbr_partition parts[4];
+        uint8_t sector[512];
+        if (ahci_read_sectors(dev, 0, 1, sector) == 0 &&
+            sector[510] == 0x55 && sector[511] == 0xAA) {
+            for (int p = 0; p < 4; p++) {
+                uint8_t *entry = &sector[446 + p * 16];
+                uint8_t type = entry[4];
+                if (type == 0x0B || type == 0x0C) {
+                    uint32_t lba_start = (uint32_t)entry[8] | ((uint32_t)entry[9] << 8) |
+                                         ((uint32_t)entry[10] << 16) | ((uint32_t)entry[11] << 24);
+                    char mnt[16];
+                    snprintf(mnt, sizeof(mnt), "/mnt/fat%d", i * 4 + p);
+                    vfs_mkpath(mnt);
+                    struct fat32_handle *fh = kmalloc(sizeof(struct fat32_handle));
+                    if (fh && fat32_mount(fh, 1, lba_start) == 0) {
+                        klog("fat32: mounted %s partition %d on %s", dev->model, p, mnt);
+                    }
+                }
+            }
+        }
+    }
 
     struct vfs_mount_info root_mount;
     vfs_mount_info(0, &root_mount);

@@ -94,6 +94,16 @@ struct fs_ops {
     int (*statfs)(struct vfs_mount *m, struct vfs_statfs *sf);
     int (*sync)(struct vfs_mount *m);
     int (*size)(struct vfs_file *f, uint64_t *out);
+    int (*fcntl)(struct vfs_file *f, int cmd, uint32_t arg);
+    int (*ioctl)(struct vfs_file *f, uint32_t request, uint32_t arg);
+    int (*fchdir)(struct vfs_file *f);
+    int (*link)(struct vfs_mount *m, const char *oldpath, const char *newpath);
+    int (*symlink)(struct vfs_mount *m, const char *target, const char *linkpath);
+    int (*readlink)(struct vfs_mount *m, const char *path, char *buf, uint32_t bufsiz);
+    int (*fchmod)(struct vfs_file *f, uint16_t mode);
+    int (*fchown)(struct vfs_file *f, uint16_t uid, uint16_t gid);
+    int (*lchown)(struct vfs_mount *m, const char *path, uint16_t uid, uint16_t gid);
+    int (*readdir_fd)(struct vfs_file *f, char *buf, uint32_t count);
 };
 
 struct vfs_mount {
@@ -157,6 +167,18 @@ int vfs_chown(const char *path, uint16_t uid, uint16_t gid);
 int vfs_touch(const char *path);
 int vfs_statfs(const char *path, struct vfs_statfs *sf);
 int vfs_sync(void);
+int vfs_sync_file(struct vfs_file *f);
+int vfs_fcntl(struct vfs_file *f, int cmd, uint32_t arg);
+int vfs_ioctl(struct vfs_file *f, uint32_t request, uint32_t arg);
+int vfs_getcwd_buf(char *buf, uint32_t size);
+int vfs_fchdir(struct vfs_file *f);
+int vfs_link(const char *oldpath, const char *newpath);
+int vfs_symlink(const char *target, const char *linkpath);
+int vfs_readlink(const char *path, char *buf, uint32_t bufsiz);
+int vfs_fchmod(struct vfs_file *f, uint16_t mode);
+int vfs_fchown(struct vfs_file *f, uint16_t uid, uint16_t gid);
+int vfs_lchown(const char *path, uint16_t uid, uint16_t gid);
+int vfs_readdir_fd(struct vfs_file *f, char *buf, uint32_t count);
 
 int vfs_load(const char *path, void **buf, uint32_t *size);
 int vfs_save(const char *path, const void *buf, uint32_t size);

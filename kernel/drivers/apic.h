@@ -2,6 +2,7 @@
 #define FELINOS_APIC_H
 
 #include <stdint.h>
+#include "idt.h"
 
 /* Local APIC registers (offset from Local APIC base) */
 #define APIC_ID         0x20    /* Local APIC ID */
@@ -71,6 +72,7 @@
 #define IOAPIC_REG_VER      0x01
 #define IOAPIC_REG_ARB      0x02
 #define IOAPIC_REG_REDIR_BASE 0x10
+#define IOAPIC_MAX_IRQS     24
 
 /* I/O APIC Redirection Table bits */
 #define IOAPIC_REDIR_VECTOR     0x000000FF
@@ -129,6 +131,13 @@ void ioapic_write(uint32_t reg, uint32_t value);
 void ioapic_mask_irq(uint8_t irq);
 void ioapic_unmask_irq(uint8_t irq);
 
+/* APIC ISR handlers */
+extern void apic_timer_irq(struct regs *r);
+extern void apic_spurious_irq(struct regs *r);
+extern void apic_error_irq(struct regs *r);
+extern void apic_ipi_irq(struct regs *r);
+extern void apic_resched_irq(struct regs *r);
+
 /* SMP functions */
 void smp_init(void);
 void smp_boot_aps(void);
@@ -138,7 +147,6 @@ int smp_is_bsp(void);
 void smp_send_reschedule_ipi(void);
 
 /* Getters */
-uint32_t apic_get_base(void);
 uint32_t apic_get_ioapic_base(void);
 
 #endif

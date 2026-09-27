@@ -9,6 +9,7 @@
 #include "io.h"
 #include "user.h"
 #include "sched.h"
+#include "drivers/apic.h"
 
 #define HI(v) ((uint32_t)((uint64_t)(v) >> 32))
 #define LO(v) ((uint32_t)(v))
@@ -51,6 +52,12 @@ extern void irq6(void);  extern void irq7(void);  extern void irq8(void);
 extern void irq9(void);  extern void irq10(void); extern void irq11(void);
 extern void irq12(void); extern void irq13(void); extern void irq14(void);
 extern void irq15(void);
+
+extern void isr50(void);  /* APIC timer */
+extern void isr255(void); /* APIC spurious */
+extern void isr51(void);  /* APIC error */
+extern void isr52(void);  /* APIC IPI */
+extern void isr53(void);  /* APIC reschedule */
 
 static const char *exception_names[32] = {
     "Divide by zero",
@@ -123,6 +130,13 @@ void idt_install(void) {
     for (int i = 0; i < 16; i++) {
         idt_set_gate((uint8_t)(32 + i), irqs[i], 0x08, 0x8E);
     }
+
+    /* APIC ISR handlers */
+    idt_set_gate(50, isr50, 0x08, 0x8E);   /* APIC timer */
+    idt_set_gate(51, isr51, 0x08, 0x8E);   /* APIC error */
+    idt_set_gate(52, isr52, 0x08, 0x8E);   /* APIC IPI */
+    idt_set_gate(53, isr53, 0x08, 0x8E);   /* APIC reschedule */
+    idt_set_gate(255, isr255, 0x08, 0x8E); /* APIC spurious */
 
     __asm__ volatile ("lidt (%0)" : : "r"(&idtp));
 }
@@ -206,5 +220,31 @@ void irq_handler(struct regs *r) {
         pic_send_eoi(irq);
         irq_exit();
     }
+    sched_irq_return(r);
+}
+
+/* APIC ISR handlers */
+void isr50_handler(struct regs *r) {
+    apic_timer_irq(r);
+    sched_irq_return(r);
+}
+
+void isr51_handler(struct regs *r) {
+    apic_error_irq(r);
+    sched_irq_return(r);
+}
+
+void isr52_handler(struct regs *r) {
+    apic_ipi_irq(r);
+    sched_irq_return(r);
+}
+
+void isr53_handler(struct regs *r) {
+    apic_resched_irq(r);
+    sched_irq_return(r);
+}
+
+void isr255_handler(struct regs *r) {
+    apic_spurious_irq(r);
     sched_irq_return(r);
 }

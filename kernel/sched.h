@@ -36,6 +36,9 @@ struct task {
     int nice;
     uint16_t uid;
     uint16_t gid;
+    uint16_t umask;
+    int pgid;
+    int sid;
     uint32_t sig_pending;
     uint32_t sig_blocked;
     uint64_t sig_handler[NSIG];
@@ -139,6 +142,9 @@ struct task *kthread_create(const char *name, void (*entry)(void *), void *arg);
 void sched_tick(void);
 void sched_irq_return(struct regs *r);
 void sched_syscall_return(struct regs *r);
+
+void sched_init_ap(void);
+void sched_run_ap(void);
 
 const void *sched_input_channel(void);
 void sched_wake_input(void);

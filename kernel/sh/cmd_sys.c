@@ -18,6 +18,8 @@
 #include "vmm.h"
 #include "swap.h"
 
+extern void simple_compile(void);
+
 int cmd_help(int argc, char **argv, struct stream *in, struct stream *out) {
     const struct command *table = shell_command_table();
     int count = shell_command_count();
@@ -814,5 +816,11 @@ int cmd_poweroff(int argc, char **argv, struct stream *in, struct stream *out) {
 int cmd_halt(int argc, char **argv, struct stream *in, struct stream *out) {
     st_puts(stream_console(), "System halted.\n");
     power_halt();
+    return 0;
+}
+
+int cmd_simplecc(int argc, char **argv, struct stream *in, struct stream *out) {
+    (void)argc; (void)argv; (void)in; (void)out;
+    simple_compile();
     return 0;
 }

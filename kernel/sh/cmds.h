@@ -133,4 +133,8 @@ int cmd_memtest(int argc, char **argv, struct stream *in, struct stream *out);
 
 int cmd_nano(int argc, char **argv, struct stream *in, struct stream *out);
 
+int cmd_simplecc(int argc, char **argv, struct stream *in, struct stream *out);
+
+int cmd_test(int argc, char **argv, struct stream *in, struct stream *out);
+
 #endif

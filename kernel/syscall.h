@@ -42,6 +42,74 @@
 #define SYS_LISTEN    36  /* listen(fd, backlog)                          */
 #define SYS_ACCEPT    37  /* accept(fd, sockaddr_in*, addrlen*)           */
 
+/* Linux-compatible syscalls */
+#define SYS_GETUID    38  /* getuid()                       */
+#define SYS_GETGID    39  /* getgid()                       */
+#define SYS_GETEUID   40  /* geteuid()                      */
+#define SYS_GETEGID   41  /* getegid()                      */
+#define SYS_SETUID    42  /* setuid(uid)                    */
+#define SYS_SETGID    43  /* setgid(gid)                    */
+#define SYS_GETPID    6   /* getpid()                       */
+#define SYS_GETPPID   11  /* getppid()                      */
+#define SYS_GETTID    44  /* gettid()                       */
+#define SYS_TIMES     45  /* times(struct tms*)             */
+#define SYS_UNAME     46  /* uname(struct utsname*)         */
+#define SYS_GETRLIMIT 47  /* getrlimit(resource, rlimit*)   */
+#define SYS_SETRLIMIT 48  /* setrlimit(resource, rlimit*)   */
+#define SYS_GETRUSAGE 49  /* getrusage(who, rusage*)        */
+#define SYS_GETTIMEOFDAY 50 /* gettimeofday(timeval*, timezone*) */
+#define SYS_SETTIMEOFDAY 51 /* settimeofday(timeval*, timezone*) */
+#define SYS_NANOSLEEP 52  /* nanosleep(timespec*, timespec*) */
+#define SYS_CLOCK_GETTIME 53 /* clock_gettime(clk_id, timespec*) */
+#define SYS_CLOCK_SETTIME 54 /* clock_settime(clk_id, timespec*) */
+#define SYS_MMAP      55  /* mmap(addr, len, prot, flags, fd, off) */
+#define SYS_MUNMAP    27  /* munmap(addr, len)              */
+#define SYS_MPROTECT  56  /* mprotect(addr, len, prot)      */
+#define SYS_MSYNC     57  /* msync(addr, len, flags)        */
+#define SYS_MADVISE   58  /* madvise(addr, len, advice)     */
+#define SYS_GETDENTS  59  /* getdents(fd, dirent*, count)   */
+#define SYS_FCNTL     60  /* fcntl(fd, cmd, arg)            */
+#define SYS_IOCTL     61  /* ioctl(fd, request, arg)        */
+#define SYS_FSYNC     62  /* fsync(fd)                      */
+#define SYS_FDATASYNC 63  /* fdatasync(fd)                  */
+#define SYS_TRUNCATE  64  /* truncate(path, length)         */
+#define SYS_FTRUNCATE 65  /* ftruncate(fd, length)          */
+#define SYS_GETCWD    22  /* getcwd(buf, size)              */
+#define SYS_CHDIR     21  /* chdir(path)                    */
+#define SYS_FCHDIR    66  /* fchdir(fd)                     */
+#define SYS_RENAME    20  /* rename(old, new)               */
+#define SYS_MKDIR     18  /* mkdir(path, mode)              */
+#define SYS_RMDIR     67  /* rmdir(path)                    */
+#define SYS_CREAT     68  /* creat(path, mode)              */
+#define SYS_LINK      69  /* link(oldpath, newpath)         */
+#define SYS_UNLINK    19  /* unlink(path)                   */
+#define SYS_SYMLINK   70  /* symlink(target, linkpath)      */
+#define SYS_READLINK  71  /* readlink(path, buf, bufsiz)    */
+#define SYS_CHMOD     72  /* chmod(path, mode)              */
+#define SYS_FCHMOD    73  /* fchmod(fd, mode)               */
+#define SYS_CHOWN     74  /* chown(path, uid, gid)          */
+#define SYS_FCHOWN    75  /* fchown(fd, uid, gid)           */
+#define SYS_LCHOWN    76  /* lchown(path, uid, gid)         */
+#define SYS_UMASK     77  /* umask(mask)                    */
+#define SYS_GETUID    38  /* getuid()                       */
+#define SYS_GETGID    39  /* getgid()                       */
+#define SYS_SETUID    42  /* setuid(uid)                    */
+#define SYS_SETGID    43  /* setgid(gid)                    */
+#define SYS_GETEUID   40  /* geteuid()                      */
+#define SYS_GETEGID   41  /* getegid()                      */
+#define SYS_GETPGID   78  /* getpgid(pid)                   */
+#define SYS_SETPGID   79  /* setpgid(pid, pgid)             */
+#define SYS_GETSID    80  /* getsid(pid)                    */
+#define SYS_SETSID    81  /* setsid()                       */
+#define SYS_GETGROUPS 82  /* getgroups(size, list)          */
+#define SYS_SETGROUPS 83  /* setgroups(size, list)          */
+#define SYS_GETRESUID 84  /* getresuid(ruid, euid, suid)    */
+#define SYS_GETRESGID 85  /* getresgid(rgid, egid, sgid)    */
+#define SYS_SETRESUID 86  /* setresuid(ruid, euid, suid)    */
+#define SYS_SETRESGID 87  /* setresgid(rgid, egid, sgid)    */
+#define SYS_GETPGID   78  /* getpgid(pid)                   */
+#define SYS_SETPGID   79  /* setpgid(pid, pgid)             */
+
 #define SIGHUP     1
 #define SIGINT     2
 #define SIGQUIT    3
@@ -87,6 +155,25 @@ struct k_sigaction {
 #define O_CREAT  0x40
 #define O_TRUNC  0x200
 #define O_APPEND 0x400
+
+struct timeval {
+    uint32_t tv_sec;
+    uint32_t tv_usec;
+};
+
+struct timespec {
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+};
+
+struct utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+    char domainname[65];
+};
 
 #define USER_BASE      0x40000000u
 #define USER_HEAP_BASE 0x50000000u

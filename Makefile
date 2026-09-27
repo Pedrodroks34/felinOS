@@ -105,4 +105,16 @@ clean:
 distclean: clean
 	rm -f $(DISK) $(VDISK) $(SWAP)
 
-.PHONY: all run run-kernel run-serial clean distclean
+test: $(BIN) $(DISK) $(VDISK) $(SWAP)
+	@echo "Running automated tests in QEMU..."
+	@qemu-system-x86_64 -kernel $(BIN) -m 64M \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-display none -serial stdio \
+		-append "test" \
+		-monitor none \
+		-no-reboot \
+		-watchdog-action reset
+
+.PHONY: all run run-kernel run-serial clean distclean test

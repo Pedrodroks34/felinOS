@@ -28,47 +28,41 @@
 #define ATA_CMD_WRITE_PIO  0x30
 #define ATA_CMD_READ_PIO_EXT  0x24
 #define ATA_CMD_WRITE_PIO_EXT 0x34
+#define ATA_CMD_READ_DMA      0xC8
+#define ATA_CMD_WRITE_DMA     0xCA
+#define ATA_CMD_READ_DMA_EXT  0x25
+#define ATA_CMD_WRITE_DMA_EXT 0x35
 #define ATA_CMD_CACHE_FLUSH 0xE7
 #define ATA_CMD_CACHE_FLUSH_EXT 0xEA
 #define ATA_CMD_IDENTIFY   0xEC
 #define ATA_CMD_IDENTIFY_PACKET 0xA1
+#define ATA_CMD_SET_FEATURES 0xEF
 
 #define ATA_ID_LBA48_SUPPORTED 0x0400
+#define ATA_ID_DMA_SUPPORTED   0x0200
 
 #define ATA_DCR_NIEN 0x02
 #define ATA_DCR_SRST 0x04
 
-/* How long a task may block waiting for the drive's interrupt before the
-   command is declared dead. Per-sector PIO transfers finish in microseconds
-   to milliseconds, so this only ever fires when an IRQ was lost or the drive
-   stopped responding. A cache flush can legitimately take much longer. */
 #define ATA_MS_TO_TICKS(ms)     (((ms) * PIT_FREQUENCY + 999u) / 1000u)
 #define ATA_IRQ_TIMEOUT_TICKS   ATA_MS_TO_TICKS(5000u)
 #define ATA_FLUSH_TIMEOUT_TICKS ATA_MS_TO_TICKS(30000u)
 
-/*
- * One state block per ATA channel (0 = primary, 1 = secondary).
- * `irq_fired` is set by the IRQ handler and consumed by whichever task is
- * waiting on the channel; `busy` serialises access to the channel itself,
- * since the hardware can only have one command in flight at a time and,
- * unlike the old pure-polling driver, a task can now block (and let another
- * task run) in the middle of a transfer.
- */
 struct ata_channel {
     volatile int irq_fired;
     mutex_t lock;
+    int uses_dma;
 };
 
 static struct ata_channel channels[2];
 static struct ata_device devices[ATA_MAX_DEVICES];
 static int device_count;
 
-/* PCI IDE controller info */
-static struct pci_device *ide_controller;
-static uint8_t ide_irq_primary;
-static uint8_t ide_irq_secondary;
-static uint16_t ide_io_bases[2] = { 0x1F0, 0x170 };
-static uint16_t ide_ctrl_bases[2] = { 0x3F6, 0x376 };
+static struct pci_device *ide_pci_dev;
+static uint8_t ide_irq[2];
+static uint16_t ide_io_base[2];
+static uint16_t ide_ctrl_base[2];
+static uint32_t ide_bm_base;
 
 static void ata_delay(struct ata_device *dev) {
     for (int i = 0; i < 4; i++) {
@@ -76,10 +70,9 @@ static void ata_delay(struct ata_device *dev) {
     }
 }
 
-/* Time-based timeout using PIT ticks instead of loop counter */
 static int ata_wait_busy(uint16_t io_base) {
     uint32_t start = pit_ticks();
-    uint32_t timeout = ATA_MS_TO_TICKS(10000);  /* 10 second timeout */
+    uint32_t timeout = ATA_MS_TO_TICKS(10000);
     while ((pit_ticks() - start) < timeout) {
         uint8_t status = inb(io_base + ATA_REG_STATUS);
         if (!(status & ATA_SR_BSY)) {
@@ -91,7 +84,7 @@ static int ata_wait_busy(uint16_t io_base) {
 
 static int ata_wait_drq(uint16_t io_base) {
     uint32_t start = pit_ticks();
-    uint32_t timeout = ATA_MS_TO_TICKS(10000);  /* 10 second timeout */
+    uint32_t timeout = ATA_MS_TO_TICKS(10000);
     while ((pit_ticks() - start) < timeout) {
         uint8_t status = inb(io_base + ATA_REG_STATUS);
         if (status & ATA_SR_ERR) {
@@ -104,13 +97,6 @@ static int ata_wait_drq(uint16_t io_base) {
     return -1;
 }
 
-/*
- * IRQ handlers for the primary and secondary channels. All they
- * do is record that an interrupt happened and wake whoever is blocked on
- * it; the actual status/error handling happens in the waiting task, once
- * it is scheduled back in, by reading the regular Status register (which
- * is also what acknowledges the interrupt at the drive).
- */
 static void ata_channel_irq(int ch) {
     channels[ch].irq_fired = 1;
     sched_wake((const void *)&channels[ch].irq_fired);
@@ -124,26 +110,11 @@ static void ata_irq_secondary(struct regs *r) {
     ata_channel_irq(1);
 }
 
-/* nIEN only takes effect for the currently selected drive, so this must be
-   called right after a Drive/Head select and before the command byte. */
 static void ata_set_interrupts(struct ata_device *dev, int enable) {
     outb(dev->ctrl_base, enable ? 0x00 : ATA_DCR_NIEN);
 }
 
-/*
- * Only one command can be in flight per channel at a time. The old fully
- * polling driver never yielded the CPU mid-transfer, so two tasks could
- * never actually be "inside" ata_read/write_sectors concurrently. Now that
- * a task blocks (and lets others run) while waiting for an IRQ, a second
- * caller on the same channel has to wait its turn instead of racing the
- * first one on the hardware registers.
- */
 static void ata_channel_lock(int ch) {
-    /* The mutex is FIFO and makes its holder unkillable until it lets go: a
-       SIGINT/SIGKILL arriving mid-transfer is recorded and acted on after
-       ata_channel_unlock(), so the channel can never be left locked by a task
-       that dies inside a wait. The wait is bounded by the timeout in
-       ata_wait_irq(), so this cannot make a task unkillable for long. */
     mutex_lock(&channels[ch].lock);
     channels[ch].irq_fired = 0;
 }
@@ -153,22 +124,13 @@ static void ata_channel_unlock(int ch) {
     mutex_unlock(&channels[ch].lock);
 }
 
-/*
- * Pulse SRST on the channel to abort whatever the drive is stuck doing.
- * Used only after an IRQ wait timed out with the drive still BSY, so the
- * channel is left in a known-idle state for the next command instead of
- * inheriting a wedged one. This resets both devices on the channel; the
- * driver keeps no per-device configuration that a reset would lose.
- */
 static void ata_soft_reset(struct ata_device *dev) {
     outb(dev->ctrl_base, ATA_DCR_SRST | ATA_DCR_NIEN);
-    /* Hold SRST for >= 5us (use PIT for accurate timing) */
     uint32_t start = pit_ticks();
     while ((pit_ticks() - start) < ATA_MS_TO_TICKS(1)) {
         inb(dev->ctrl_base);
     }
     outb(dev->ctrl_base, ATA_DCR_NIEN);
-    /* Give the drive ~2ms before polling BSY (real hardware may need up to 30ms) */
     start = pit_ticks();
     while ((pit_ticks() - start) < ATA_MS_TO_TICKS(30)) {
         inb(dev->ctrl_base);
@@ -177,12 +139,6 @@ static void ata_soft_reset(struct ata_device *dev) {
     channels[dev->channel].irq_fired = 0;
 }
 
-/*
- * Block until the channel's IRQ has fired (and consume it), or until
- * `timeout_ticks` have elapsed. Returns 0 if the IRQ was seen, -1 on timeout.
- * The timeout is what guarantees the caller -- who holds the channel lock --
- * always comes back and releases it, even if IRQ14/15 never arrives.
- */
 static int ata_wait_irq(int ch, uint32_t timeout_ticks) {
     uint32_t deadline = pit_ticks() + timeout_ticks;
     int ok = 1;
@@ -201,14 +157,6 @@ static int ata_wait_irq(int ch, uint32_t timeout_ticks) {
     return ok ? 0 : -1;
 }
 
-/*
- * Wait for the drive to signal "data ready" (read) or "ready for more
- * data" (write, sector 2 onward). With no scheduler to hand the CPU to
- * (early boot, before sched_run) this falls back to the exact original
- * busy-poll so boot-time reads are unaffected. Once tasks are running, the
- * caller blocks via the scheduler and an interrupt wakes it back up,
- * leaving the CPU free for other tasks while the drive works.
- */
 static int ata_wait_ready(struct ata_device *dev, int use_irq) {
     uint16_t io = dev->io_base;
 
@@ -218,18 +166,14 @@ static int ata_wait_ready(struct ata_device *dev, int use_irq) {
 
     int timed_out = ata_wait_irq(dev->channel, ATA_IRQ_TIMEOUT_TICKS) < 0;
 
-    uint8_t status = inb(io + ATA_REG_STATUS); /* also acks the IRQ at the drive */
+    uint8_t status = inb(io + ATA_REG_STATUS);
     if (status & ATA_SR_BSY) {
-        /* Either the IRQ was lost and the drive is genuinely hung, or this
-           was a stale/early wakeup. Only give the latter a short poll. */
         if (timed_out || ata_wait_busy(io) < 0) {
             ata_soft_reset(dev);
             return -1;
         }
         status = inb(io + ATA_REG_STATUS);
     }
-    /* A timeout with BSY clear means the IRQ was lost but the drive did
-       finish; carry on and let the status bits decide. */
     if (status & (ATA_SR_ERR | ATA_SR_DF)) {
         return -1;
     }
@@ -239,14 +183,6 @@ static int ata_wait_ready(struct ata_device *dev, int use_irq) {
     return 0;
 }
 
-/*
- * Wait for a command that ends without a data phase (the last sector of a
- * PIO write, CACHE FLUSH) to actually finish: BSY clear and no error. Per the
- * ATA PIO protocol the drive raises one more interrupt for this, after the
- * final sector has been transferred, so it has to be consumed here rather
- * than left pending (where it would look like a stale wakeup to the next
- * command) or raced against with a new command byte.
- */
 static int ata_wait_complete(struct ata_device *dev, int use_irq, uint32_t timeout_ticks) {
     uint16_t io = dev->io_base;
     int timed_out = 0;
@@ -255,7 +191,7 @@ static int ata_wait_complete(struct ata_device *dev, int use_irq, uint32_t timeo
         timed_out = ata_wait_irq(dev->channel, timeout_ticks) < 0;
     }
 
-    uint8_t status = inb(io + ATA_REG_STATUS); /* also acks the IRQ at the drive */
+    uint8_t status = inb(io + ATA_REG_STATUS);
     if (status & ATA_SR_BSY) {
         if (timed_out || ata_wait_busy(io) < 0) {
             ata_soft_reset(dev);
@@ -329,6 +265,7 @@ static int ata_identify(struct ata_device *dev) {
     dev->type = type;
     dev->capabilities = id[49];
     dev->lba48 = (type == ATA_TYPE_ATA && (id[83] & ATA_ID_LBA48_SUPPORTED)) ? 1 : 0;
+    dev->dma_supported = (type == ATA_TYPE_ATA && (id[63] & ATA_ID_DMA_SUPPORTED)) ? 1 : 0;
 
     if (dev->lba48) {
         uint64_t total = (uint64_t)id[100] | ((uint64_t)id[101] << 16) |
@@ -348,38 +285,81 @@ static int ata_identify(struct ata_device *dev) {
     return 1;
 }
 
-/* Find IDE controller via PCI and get its I/O ports and IRQ */
+static void ata_setup_dma_prdt(struct ata_device *dev, uint32_t lba, uint8_t count, void *buffer, int write) {
+    uint32_t *prdt = (uint32_t *)ide_bm_base;
+    uint32_t phys_buf = (uint32_t)(uintptr_t)buffer;
+    uint32_t byte_count = count * 512;
+
+    prdt[0] = phys_buf;
+    prdt[1] = (byte_count & 0xFFFE) | 0x80000000;
+
+    outl(ide_bm_base + 8, 0);
+    outl(ide_bm_base + 4, (uint32_t)(uintptr_t)prdt);
+}
+
+static void ata_start_dma(struct ata_device *dev, int write) {
+    uint8_t cmd = write ? ATA_CMD_WRITE_DMA : ATA_CMD_READ_DMA;
+    if (dev->lba48) {
+        cmd = write ? ATA_CMD_WRITE_DMA_EXT : ATA_CMD_READ_DMA_EXT;
+    }
+    outb(dev->io_base + ATA_REG_COMMAND, cmd);
+    outb(ide_bm_base, 0x01 | (write ? 0x08 : 0x00));
+}
+
+static int ata_wait_dma(struct ata_device *dev) {
+    uint32_t start = pit_ticks();
+    uint32_t timeout = ATA_IRQ_TIMEOUT_TICKS;
+
+    while ((pit_ticks() - start) < timeout) {
+        uint8_t status = inb(ide_bm_base + 2);
+        if (status & 0x04) {
+            outb(ide_bm_base, 0);
+            uint8_t drive_status = inb(dev->io_base + ATA_REG_STATUS);
+            return (drive_status & (ATA_SR_ERR | ATA_SR_DF)) ? -1 : 0;
+        }
+        if (channels[dev->channel].irq_fired) {
+            channels[dev->channel].irq_fired = 0;
+            outb(ide_bm_base, 0);
+            uint8_t drive_status = inb(dev->io_base + ATA_REG_STATUS);
+            return (drive_status & (ATA_SR_ERR | ATA_SR_DF)) ? -1 : 0;
+        }
+    }
+    outb(ide_bm_base, 0);
+    return -1;
+}
+
 static int ata_find_pci_controller(void) {
     for (int i = 0; i < pci_device_count(); i++) {
         struct pci_device *pci = pci_get_device(i);
         if (!pci) continue;
 
-        /* Class 0x01 = Mass Storage, Subclass 0x01 = IDE */
         if (pci->class_code == 0x01 && pci->subclass == 0x01) {
-            ide_controller = pci;
-            ide_irq_primary = pci->irq;
-            ide_irq_secondary = pci->irq;
+            ide_pci_dev = pci;
+            ide_irq[0] = pci->irq;
+            ide_irq[1] = pci->irq;
 
-            /* Read BAR0-BAR3 for I/O ports */
             uint32_t bar0 = pci_read_config(pci->bus, pci->slot, pci->func, 0x10);
             uint32_t bar1 = pci_read_config(pci->bus, pci->slot, pci->func, 0x14);
             uint32_t bar2 = pci_read_config(pci->bus, pci->slot, pci->func, 0x18);
             uint32_t bar3 = pci_read_config(pci->bus, pci->slot, pci->func, 0x1C);
+            uint32_t bar4 = pci_read_config(pci->bus, pci->slot, pci->func, 0x20);
 
-            /* If BARs are 0, use legacy defaults */
             if (bar0 == 0 || bar0 == 0xFFFFFFFF) bar0 = 0x1F0;
             if (bar1 == 0 || bar1 == 0xFFFFFFFF) bar1 = 0x3F6;
             if (bar2 == 0 || bar2 == 0xFFFFFFFF) bar2 = 0x170;
             if (bar3 == 0 || bar3 == 0xFFFFFFFF) bar3 = 0x376;
+            if (bar4 == 0 || bar4 == 0xFFFFFFFF) bar4 = 0;
 
-            ide_io_bases[0] = (uint16_t)(bar0 & 0xFFF0);
-            ide_ctrl_bases[0] = (uint16_t)(bar1 & 0xFFF0);
-            ide_io_bases[1] = (uint16_t)(bar2 & 0xFFF0);
-            ide_ctrl_bases[1] = (uint16_t)(bar3 & 0xFFF0);
+            ide_io_base[0] = (uint16_t)(bar0 & 0xFFF0);
+            ide_ctrl_base[0] = (uint16_t)(bar1 & 0xFFF0);
+            ide_io_base[1] = (uint16_t)(bar2 & 0xFFF0);
+            ide_ctrl_base[1] = (uint16_t)(bar3 & 0xFFF0);
+            ide_bm_base = bar4 & 0xFFFFFFF0;
 
-            klog("ata: PCI IDE controller at %02x:%02x.%x, IRQ %u, ports 0x%04x/0x%04x",
-                 pci->bus, pci->slot, pci->func, pci->irq, ide_io_bases[0], ide_io_bases[1]);
+            pci_write_config(pci->bus, pci->slot, pci->func, 0x04, 0x07);
 
+            klog("ata: PCI IDE at %02x:%02x.%x, IRQ %u, BMIDE at 0x%08x",
+                 pci->bus, pci->slot, pci->func, pci->irq, ide_bm_base);
             return 1;
         }
     }
@@ -393,13 +373,17 @@ void ata_init(void) {
     mutex_init(&channels[0].lock, "ata0", 0);
     mutex_init(&channels[1].lock, "ata1", 0);
 
-    /* Try to find PCI IDE controller first */
-    if (ata_find_pci_controller()) {
-        /* Use PCI-discovered ports and IRQ */
-        irq_install_handler(ide_irq_primary, ata_irq_primary);
-        irq_install_handler(ide_irq_secondary, ata_irq_secondary);
+    int has_pci = ata_find_pci_controller();
+
+    if (has_pci) {
+        irq_install_handler(ide_irq[0], ata_irq_primary);
+        irq_install_handler(ide_irq[1], ata_irq_secondary);
     } else {
-        /* Fall back to legacy ISA ports */
+        ide_io_base[0] = 0x1F0;
+        ide_ctrl_base[0] = 0x3F6;
+        ide_io_base[1] = 0x170;
+        ide_ctrl_base[1] = 0x376;
+        ide_bm_base = 0;
         irq_install_handler(14, ata_irq_primary);
         irq_install_handler(15, ata_irq_secondary);
     }
@@ -410,8 +394,8 @@ void ata_init(void) {
             memset(&dev, 0, sizeof(dev));
             dev.channel = (uint8_t)channel;
             dev.slave = (uint8_t)slave;
-            dev.io_base = ide_io_bases[channel];
-            dev.ctrl_base = ide_ctrl_bases[channel];
+            dev.io_base = ide_io_base[channel];
+            dev.ctrl_base = ide_ctrl_base[channel];
 
             outb(dev.ctrl_base, 0x02);
 
@@ -420,6 +404,15 @@ void ata_init(void) {
                 dev.name[1] = 'd';
                 dev.name[2] = (char)('a' + channel * 2 + slave);
                 dev.name[3] = '\0';
+                
+                if (dev.dma_supported && ide_bm_base) {
+                    channels[channel].uses_dma = 1;
+                    outb(dev.io_base + ATA_REG_COMMAND, ATA_CMD_SET_FEATURES);
+                    outb(dev.io_base + ATA_REG_SECCOUNT, 0x01);
+                    ata_wait_busy(dev.io_base);
+                    klog("ata: %s: DMA enabled", dev.name);
+                }
+                
                 devices[device_count++] = dev;
             }
         }
@@ -457,12 +450,40 @@ int ata_read_sectors(struct ata_device *dev, uint32_t lba, uint8_t count, void *
     uint16_t *buf = (uint16_t *)buffer;
     int ch = dev->channel;
     int use_irq = sched_can_sleep();
+    int use_dma = channels[ch].uses_dma && ide_bm_base && count > 1;
 
     ata_channel_lock(ch);
 
     if (ata_wait_busy(io) < 0) {
         ata_channel_unlock(ch);
         return -1;
+    }
+
+    if (use_dma) {
+        outb(io + ATA_REG_HDDEVSEL, (uint8_t)(0xE0 | (dev->slave << 4)));
+        ata_set_interrupts(dev, use_irq);
+        
+        if (dev->lba48) {
+            outb(io + ATA_REG_SECCOUNT, 0);
+            outb(io + ATA_REG_LBA0, (uint8_t)((lba >> 24) & 0xFF));
+            outb(io + ATA_REG_LBA1, 0);
+            outb(io + ATA_REG_LBA2, 0);
+            outb(io + ATA_REG_SECCOUNT, count);
+            outb(io + ATA_REG_LBA0, (uint8_t)(lba & 0xFF));
+            outb(io + ATA_REG_LBA1, (uint8_t)((lba >> 8) & 0xFF));
+            outb(io + ATA_REG_LBA2, (uint8_t)((lba >> 16) & 0xFF));
+        } else {
+            outb(io + ATA_REG_SECCOUNT, count);
+            outb(io + ATA_REG_LBA0, (uint8_t)(lba & 0xFF));
+            outb(io + ATA_REG_LBA1, (uint8_t)((lba >> 8) & 0xFF));
+            outb(io + ATA_REG_LBA2, (uint8_t)((lba >> 16) & 0xFF));
+        }
+
+        ata_setup_dma_prdt(dev, lba, count, buffer, 0);
+        ata_start_dma(dev, 0);
+        int result = ata_wait_dma(dev);
+        ata_channel_unlock(ch);
+        return result;
     }
 
     if (dev->lba48) {
@@ -487,8 +508,6 @@ int ata_read_sectors(struct ata_device *dev, uint32_t lba, uint8_t count, void *
         outb(io + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
     }
 
-    /* READ SECTORS raises DRQ (and, once interrupts are enabled, an IRQ)
-       for every sector in the request, including the first. */
     int sectors = (count == 0) ? 256 : count;
     int result = 0;
     for (int s = 0; s < sectors; s++) {
@@ -514,12 +533,40 @@ int ata_write_nf(struct ata_device *dev, uint32_t lba, uint8_t count, const void
     const uint16_t *buf = (const uint16_t *)buffer;
     int ch = dev->channel;
     int use_irq = sched_can_sleep();
+    int use_dma = channels[ch].uses_dma && ide_bm_base && count > 1;
 
     ata_channel_lock(ch);
 
     if (ata_wait_busy(io) < 0) {
         ata_channel_unlock(ch);
         return -1;
+    }
+
+    if (use_dma) {
+        outb(io + ATA_REG_HDDEVSEL, (uint8_t)(0xE0 | (dev->slave << 4)));
+        ata_set_interrupts(dev, use_irq);
+        
+        if (dev->lba48) {
+            outb(io + ATA_REG_SECCOUNT, 0);
+            outb(io + ATA_REG_LBA0, (uint8_t)((lba >> 24) & 0xFF));
+            outb(io + ATA_REG_LBA1, 0);
+            outb(io + ATA_REG_LBA2, 0);
+            outb(io + ATA_REG_SECCOUNT, count);
+            outb(io + ATA_REG_LBA0, (uint8_t)(lba & 0xFF));
+            outb(io + ATA_REG_LBA1, (uint8_t)((lba >> 8) & 0xFF));
+            outb(io + ATA_REG_LBA2, (uint8_t)((lba >> 16) & 0xFF));
+        } else {
+            outb(io + ATA_REG_SECCOUNT, count);
+            outb(io + ATA_REG_LBA0, (uint8_t)(lba & 0xFF));
+            outb(io + ATA_REG_LBA1, (uint8_t)((lba >> 8) & 0xFF));
+            outb(io + ATA_REG_LBA2, (uint8_t)((lba >> 16) & 0xFF));
+        }
+
+        ata_setup_dma_prdt(dev, lba, count, (void *)buffer, 1);
+        ata_start_dma(dev, 1);
+        int result = ata_wait_dma(dev);
+        ata_channel_unlock(ch);
+        return result;
     }
 
     if (dev->lba48) {
@@ -547,10 +594,6 @@ int ata_write_nf(struct ata_device *dev, uint32_t lba, uint8_t count, const void
     int sectors = (count == 0) ? 256 : count;
     int result = 0;
     for (int s = 0; s < sectors; s++) {
-        /* WRITE SECTORS never raises an IRQ for the first sector -- the
-           drive is only ready once BSY clears and DRQ sets on its own,
-           which the host has to poll for. From the second sector on, the
-           IRQ means "previous sector consumed, send the next one". */
         int ready = (s == 0) ? ata_wait_drq(io) : ata_wait_ready(dev, use_irq);
         if (ready < 0) {
             result = -1;
@@ -564,9 +607,6 @@ int ata_write_nf(struct ata_device *dev, uint32_t lba, uint8_t count, const void
         }
     }
 
-    /* The drive is still busy committing the last sector (and will raise one
-       more IRQ when done). Don't hand the channel to anyone, or issue FLUSH,
-       until that has happened. */
     if (result == 0 && ata_wait_complete(dev, use_irq, ATA_IRQ_TIMEOUT_TICKS) < 0) {
         result = -1;
     }
@@ -575,13 +615,6 @@ int ata_write_nf(struct ata_device *dev, uint32_t lba, uint8_t count, const void
     return result;
 }
 
-/*
- * Flush the drive's write cache. Takes the channel lock like any other
- * command (another task may be mid-transfer on this channel or on the other
- * drive), re-selects `dev` (the last command on the channel may have been for
- * its sibling), and only writes the command byte once the drive is idle.
- * Returns 0 on success, -1 on error or timeout.
- */
 int ata_flush(struct ata_device *dev) {
     if (!dev || dev->type != ATA_TYPE_ATA) {
         return -1;
@@ -600,7 +633,7 @@ int ata_flush(struct ata_device *dev) {
 
     outb(io + ATA_REG_HDDEVSEL, (uint8_t)(0xE0 | (dev->slave << 4)));
     ata_delay(dev);
-    if (ata_wait_busy(io) < 0) {   /* selected drive must not be BSY either */
+    if (ata_wait_busy(io) < 0) {
         ata_channel_unlock(ch);
         return -1;
     }
@@ -608,7 +641,7 @@ int ata_flush(struct ata_device *dev) {
     ata_set_interrupts(dev, use_irq);
     outb(io + ATA_REG_COMMAND, dev->lba48 ? ATA_CMD_CACHE_FLUSH_EXT : ATA_CMD_CACHE_FLUSH);
     if (!use_irq) {
-        ata_delay(dev);            /* let BSY assert before polling it */
+        ata_delay(dev);
     }
     result = ata_wait_complete(dev, use_irq, ATA_FLUSH_TIMEOUT_TICKS);
 

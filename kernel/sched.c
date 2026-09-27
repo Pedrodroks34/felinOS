@@ -179,6 +179,19 @@ void sched_init(void) {
     started = 1;
 }
 
+void sched_init_ap(void) {
+    /* For APs, just set up the current task pointer */
+    started = 1;
+}
+
+void sched_run_ap(void) {
+    /* APs just enter the scheduler loop */
+    sti();
+    for (;;) {
+        schedule();
+    }
+}
+
 int sched_active(void) {
     return started;
 }

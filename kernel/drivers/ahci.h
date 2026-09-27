@@ -102,6 +102,20 @@
 #define AHCI_CMD_HEADER_A   (1u << 5)   /* ATAPI */
 #define AHCI_CMD_HEADER_PMP (1u << 12)  /* Port Multiplier Port */
 
+/* FIS structures */
+struct ahci_fis {
+    uint8_t fis_type;
+    uint8_t pmport_c;
+    uint8_t command;
+    uint8_t featurel;
+    uint8_t lba0, lba1, lba2, device;
+    uint8_t lba3, lba4, lba5, featureh;
+    uint8_t countl, counth;
+    uint8_t icc;
+    uint8_t control;
+    uint8_t rsv[4];
+} __attribute__((packed));
+
 /* PRDT entry */
 struct ahci_prdt_entry {
     uint32_t dba;       /* Data Base Address */
