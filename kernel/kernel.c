@@ -19,11 +19,14 @@
 #include "drivers/rtc.h"
 #include "drivers/keyboard.h"
 #include "drivers/ata.h"
+#include "drivers/ahci.h"
+#include "drivers/apic.h"
 #include "drivers/pci.h"
 #include "drivers/acpi.h"
 #include "drivers/cpu.h"
 #include "fs/vfs.h"
 #include "fs/gatofs.h"
+#include "fs/fat32.h"
 #include "lib/format.h"
 #include "sh/shell.h"
 #include "user.h"
@@ -205,6 +208,28 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
         snprintf(detail, sizeof(detail), "no drives attached");
     }
     boot_step("ata controller", detail);
+
+    ahci_init();
+    if (ahci_device_count() > 0) {
+        struct ahci_device *first = ahci_get_device(0);
+        snprintf(detail, sizeof(detail), "%d SATA device(s), first is %s",
+                 ahci_device_count(), first->model);
+    } else {
+        snprintf(detail, sizeof(detail), "no SATA devices");
+    }
+    boot_step("ahci controller", detail);
+
+    apic_init();
+    if (apic_is_present()) {
+        snprintf(detail, sizeof(detail), "local APIC at 0x%08x, %u CPU(s)",
+                 apic_get_base(), smp_cpu_count());
+    } else {
+        snprintf(detail, sizeof(detail), "not present, using PIC");
+    }
+    boot_step("apic", detail);
+
+    fat32_init();
+    boot_step("fat32", "FAT32 reader ready for host file exchange");
 
     if (swap_autostart() == SWAP_OK) {
         snprintf(detail, sizeof(detail), "%u MB on %s, %u slots",

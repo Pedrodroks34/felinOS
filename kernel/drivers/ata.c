@@ -1,10 +1,12 @@
 #include "drivers/ata.h"
+#include "drivers/pci.h"
 #include "lib/string.h"
 #include "io.h"
 #include "idt.h"
 #include "sched.h"
 #include "drivers/pit.h"
 #include "sync.h"
+#include "console.h"
 
 #define ATA_REG_DATA      0
 #define ATA_REG_ERROR     1
@@ -45,7 +47,7 @@
 #define ATA_FLUSH_TIMEOUT_TICKS ATA_MS_TO_TICKS(30000u)
 
 /*
- * One state block per ATA channel (0 = primary/IRQ14, 1 = secondary/IRQ15).
+ * One state block per ATA channel (0 = primary, 1 = secondary).
  * `irq_fired` is set by the IRQ handler and consumed by whichever task is
  * waiting on the channel; `busy` serialises access to the channel itself,
  * since the hardware can only have one command in flight at a time and,
@@ -61,15 +63,24 @@ static struct ata_channel channels[2];
 static struct ata_device devices[ATA_MAX_DEVICES];
 static int device_count;
 
+/* PCI IDE controller info */
+static struct pci_device *ide_controller;
+static uint8_t ide_irq_primary;
+static uint8_t ide_irq_secondary;
+static uint16_t ide_io_bases[2] = { 0x1F0, 0x170 };
+static uint16_t ide_ctrl_bases[2] = { 0x3F6, 0x376 };
+
 static void ata_delay(struct ata_device *dev) {
     for (int i = 0; i < 4; i++) {
         inb(dev->ctrl_base);
     }
 }
 
+/* Time-based timeout using PIT ticks instead of loop counter */
 static int ata_wait_busy(uint16_t io_base) {
-    uint32_t guard = 1000000;
-    while (guard--) {
+    uint32_t start = pit_ticks();
+    uint32_t timeout = ATA_MS_TO_TICKS(10000);  /* 10 second timeout */
+    while ((pit_ticks() - start) < timeout) {
         uint8_t status = inb(io_base + ATA_REG_STATUS);
         if (!(status & ATA_SR_BSY)) {
             return 0;
@@ -79,8 +90,9 @@ static int ata_wait_busy(uint16_t io_base) {
 }
 
 static int ata_wait_drq(uint16_t io_base) {
-    uint32_t guard = 1000000;
-    while (guard--) {
+    uint32_t start = pit_ticks();
+    uint32_t timeout = ATA_MS_TO_TICKS(10000);  /* 10 second timeout */
+    while ((pit_ticks() - start) < timeout) {
         uint8_t status = inb(io_base + ATA_REG_STATUS);
         if (status & ATA_SR_ERR) {
             return -1;
@@ -93,7 +105,7 @@ static int ata_wait_drq(uint16_t io_base) {
 }
 
 /*
- * IRQ handlers for the primary (14) and secondary (15) channels. All they
+ * IRQ handlers for the primary and secondary channels. All they
  * do is record that an interrupt happened and wake whoever is blocked on
  * it; the actual status/error handling happens in the waiting task, once
  * it is scheduled back in, by reading the regular Status register (which
@@ -150,11 +162,15 @@ static void ata_channel_unlock(int ch) {
  */
 static void ata_soft_reset(struct ata_device *dev) {
     outb(dev->ctrl_base, ATA_DCR_SRST | ATA_DCR_NIEN);
-    for (int i = 0; i < 100; i++) {   /* hold SRST for >= 5us */
+    /* Hold SRST for >= 5us (use PIT for accurate timing) */
+    uint32_t start = pit_ticks();
+    while ((pit_ticks() - start) < ATA_MS_TO_TICKS(1)) {
         inb(dev->ctrl_base);
     }
     outb(dev->ctrl_base, ATA_DCR_NIEN);
-    for (int i = 0; i < 2000; i++) {  /* give the drive ~2ms before polling BSY */
+    /* Give the drive ~2ms before polling BSY (real hardware may need up to 30ms) */
+    start = pit_ticks();
+    while ((pit_ticks() - start) < ATA_MS_TO_TICKS(30)) {
         inb(dev->ctrl_base);
     }
     ata_wait_busy(dev->io_base);
@@ -332,17 +348,61 @@ static int ata_identify(struct ata_device *dev) {
     return 1;
 }
 
-void ata_init(void) {
-    static const uint16_t io_bases[2] = { 0x1F0, 0x170 };
-    static const uint16_t ctrl_bases[2] = { 0x3F6, 0x376 };
+/* Find IDE controller via PCI and get its I/O ports and IRQ */
+static int ata_find_pci_controller(void) {
+    for (int i = 0; i < pci_device_count(); i++) {
+        struct pci_device *pci = pci_get_device(i);
+        if (!pci) continue;
 
+        /* Class 0x01 = Mass Storage, Subclass 0x01 = IDE */
+        if (pci->class_code == 0x01 && pci->subclass == 0x01) {
+            ide_controller = pci;
+            ide_irq_primary = pci->irq;
+            ide_irq_secondary = pci->irq;
+
+            /* Read BAR0-BAR3 for I/O ports */
+            uint32_t bar0 = pci_read_config(pci->bus, pci->slot, pci->func, 0x10);
+            uint32_t bar1 = pci_read_config(pci->bus, pci->slot, pci->func, 0x14);
+            uint32_t bar2 = pci_read_config(pci->bus, pci->slot, pci->func, 0x18);
+            uint32_t bar3 = pci_read_config(pci->bus, pci->slot, pci->func, 0x1C);
+
+            /* If BARs are 0, use legacy defaults */
+            if (bar0 == 0 || bar0 == 0xFFFFFFFF) bar0 = 0x1F0;
+            if (bar1 == 0 || bar1 == 0xFFFFFFFF) bar1 = 0x3F6;
+            if (bar2 == 0 || bar2 == 0xFFFFFFFF) bar2 = 0x170;
+            if (bar3 == 0 || bar3 == 0xFFFFFFFF) bar3 = 0x376;
+
+            ide_io_bases[0] = (uint16_t)(bar0 & 0xFFF0);
+            ide_ctrl_bases[0] = (uint16_t)(bar1 & 0xFFF0);
+            ide_io_bases[1] = (uint16_t)(bar2 & 0xFFF0);
+            ide_ctrl_bases[1] = (uint16_t)(bar3 & 0xFFF0);
+
+            klog("ata: PCI IDE controller at %02x:%02x.%x, IRQ %u, ports 0x%04x/0x%04x",
+                 pci->bus, pci->slot, pci->func, pci->irq, ide_io_bases[0], ide_io_bases[1]);
+
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void ata_init(void) {
     device_count = 0;
     memset(devices, 0, sizeof(devices));
     memset(channels, 0, sizeof(channels));
     mutex_init(&channels[0].lock, "ata0", 0);
     mutex_init(&channels[1].lock, "ata1", 0);
-    irq_install_handler(14, ata_irq_primary);
-    irq_install_handler(15, ata_irq_secondary);
+
+    /* Try to find PCI IDE controller first */
+    if (ata_find_pci_controller()) {
+        /* Use PCI-discovered ports and IRQ */
+        irq_install_handler(ide_irq_primary, ata_irq_primary);
+        irq_install_handler(ide_irq_secondary, ata_irq_secondary);
+    } else {
+        /* Fall back to legacy ISA ports */
+        irq_install_handler(14, ata_irq_primary);
+        irq_install_handler(15, ata_irq_secondary);
+    }
 
     for (int channel = 0; channel < 2; channel++) {
         for (int slave = 0; slave < 2; slave++) {
@@ -350,8 +410,8 @@ void ata_init(void) {
             memset(&dev, 0, sizeof(dev));
             dev.channel = (uint8_t)channel;
             dev.slave = (uint8_t)slave;
-            dev.io_base = io_bases[channel];
-            dev.ctrl_base = ctrl_bases[channel];
+            dev.io_base = ide_io_bases[channel];
+            dev.ctrl_base = ide_ctrl_bases[channel];
 
             outb(dev.ctrl_base, 0x02);
 
@@ -584,7 +644,7 @@ int ata_read_partitions(struct ata_device *dev, struct mbr_partition *parts, int
         parts[found].lba_start = (uint32_t)entry[8] | ((uint32_t)entry[9] << 8) |
                                  ((uint32_t)entry[10] << 16) | ((uint32_t)entry[11] << 24);
         parts[found].sectors = (uint32_t)entry[12] | ((uint32_t)entry[13] << 8) |
-                               ((uint32_t)entry[14] << 16) | ((uint32_t)entry[15] << 24);
+                                ((uint32_t)entry[14] << 16) | ((uint32_t)entry[15] << 24);
         found++;
     }
     return found;
