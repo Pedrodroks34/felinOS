@@ -2,6 +2,10 @@ ENTRY(_start)
 
 SECTIONS
 {
+    .multiboot ALIGN(4) : {
+        *(.multiboot)
+    }
+
     /* Low memory the application processors execute from. INIT resets an AP
      * to the real-mode reset vector, so the code has to sit below 1 MiB in
      * plain physical memory, and the 16-bit entry point has to be linkable
@@ -32,7 +36,6 @@ SECTIONS
 
     .text ALIGN(4K) : {
         text_start = .;
-        *(.multiboot)
         *(.text)
     }
     . = ALIGN(4K);
