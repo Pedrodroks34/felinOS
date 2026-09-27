@@ -27,5 +27,7 @@ const char *st_data(struct stream *s);
 uint32_t st_len(struct stream *s);
 int st_getline(struct stream *s, char *buf, uint32_t size);
 char *st_read_all(struct stream *s, uint32_t *len);
+int stream_read(struct stream *s, void *buf, uint32_t size);
+void console_force_flush(void);
 
 #endif

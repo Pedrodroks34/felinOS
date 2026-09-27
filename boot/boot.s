@@ -31,11 +31,13 @@ boot_gdt_ptr:
     .long boot_gdt
     .long 0
 
-.section .text
+/* 32-bit protected-mode entry point. Placed in a separate section so the
+ * linker can put it at a low address (< 1M) for multiboot/PVH boot. */
+.section .boot32, "ax"
 .code32
-.global _start
-.type _start, @function
-_start:
+.global boot32_entry
+.type boot32_entry, @function
+boot32_entry:
     cli
     mov $stack_top, %esp
     mov %eax, %edi
@@ -78,7 +80,7 @@ _start:
     mov %eax, %cr0
     lgdt boot_gdt_ptr
     ljmp $0x08, $long_mode
-.size _start, . - _start
+.size boot32_entry, . - boot32_entry
 
 .code64
 long_mode:
@@ -107,7 +109,7 @@ halt_loop:
  * 'make test', 'make run-kernel' and 'make run-smp' rely on.
  *
  * XEN_ELFNOTE_PHYS32_ENTRY names the 32-bit protected-mode entry point, which
- * is _start above, and QEMU takes it as the absolute address to jump to. */
+ * is boot32_entry above, and QEMU takes it as the absolute address to jump to. */
 .set XEN_ELFNOTE_PHYS32_ENTRY, 18
 
 .section .note.Xen, "a", @note
@@ -115,10 +117,6 @@ halt_loop:
     .long 4, 4, XEN_ELFNOTE_PHYS32_ENTRY   /* namesz, descsz, type */
     .asciz "Xen"
     .align 4
-    /* QEMU reads this as the absolute address of the 32-bit entry point, not
-     * as an offset from the lowest PT_LOAD: writing _start - 0x7000 here
-     * lands the CPU 0x7000 below _start, executing the middle of .text as
-     * though it were the boot stub, which then runs off into the zero page. */
-    .long _start
+    .long boot32_entry
 
 .section .note.GNU-stack,"",@progbits

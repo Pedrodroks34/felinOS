@@ -81,11 +81,24 @@ kernel/progs.o: kernel/progs.s $(addsuffix .elf,$(USER_PROGS))
 
 # GRUB's Multiboot 1 loader (and QEMU -kernel) only load ELF32, so the 64-bit
 # kernel is converted; the 32-bit boot stub switches to long mode itself.
+# We must explicitly set VMAs because objcopy's default conversion loses the
+# 64-bit layout: the 32-bit entry point must be below 1M, and the kernel text
+# must be at 1M. The --change-section-vma flags preserve the 64-bit layout.
 $(KELF): $(OBJS)
 	$(LD) $(LDFLAGS) -o $(KELF) $(OBJS)
 
 $(BIN): $(KELF)
-	objcopy -O elf32-i386 $(KELF) $(BIN)
+	objcopy -O elf32-i386 \
+	    --change-section-vma .multiboot=0x1000 \
+	    --change-section-vma .ap_handover=0x7000 \
+	    --change-section-vma .ap_tramp=0x8000 \
+	    --change-section-vma .boot32=0x8000 \
+	    --change-section-vma .text=0x100000 \
+	    --change-section-vma .rodata=0x143000 \
+	    --change-section-vma .data=0x174000 \
+	    --change-section-vma .bss=0x174b48 \
+	    --set-start=0x80c0 \
+	    $(KELF) $(BIN)
 
 $(ISO): $(BIN) boot/grub/grub.cfg tools/mkiso.sh
 	tools/mkiso.sh $(BIN) boot/grub/grub.cfg $(ISO)
@@ -105,7 +118,12 @@ $(FATDISK):
 IMAGES = $(DISK) $(VDISK) $(SWAP) $(FATDISK)
 
 run: $(ISO) $(IMAGES)
-	qemu-system-x86_64 -cdrom $(ISO) -boot d $(QEMU_COMMON) -serial stdio
+	qemu-system-x86_64 -cdrom $(ISO) -boot d \
+		-m 64M $(QEMU_NET) \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-serial stdio
 
 # The ISO is only UEFI-bootable when the host's GRUB has no BIOS modules, which
 # is the case unless grub-pc-bin (Debian) or extra/grub-bios (Arch) is
@@ -124,18 +142,38 @@ run-efi: $(ISO) $(IMAGES)
 	qemu-system-x86_64 \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
-		-cdrom $(ISO) $(QEMU_COMMON) -serial stdio
+		-cdrom $(ISO) \
+		-m 256M $(QEMU_NET) \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-serial stdio
 
 run-kernel: $(BIN) $(IMAGES)
-	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -serial stdio
+	qemu-system-x86_64 -kernel $(BIN) \
+		-m 64M $(QEMU_NET) \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-serial stdio
 
 run-serial: $(BIN) $(IMAGES)
-	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -display none -serial stdio
+	qemu-system-x86_64 -kernel $(BIN) \
+		-m 64M $(QEMU_NET) -display none \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-serial stdio
 
 # Boots with two cores so the SMP path, per-CPU run queues and `smp` output
 # are exercised.
 run-smp: $(BIN) $(IMAGES)
-	qemu-system-x86_64 -kernel $(BIN) $(QEMU_COMMON) -smp 4 -serial stdio
+	qemu-system-x86_64 -kernel $(BIN) \
+		-m 64M $(QEMU_NET) -smp 4 \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-drive file=$(VDISK),format=raw,if=ide,index=1,media=disk \
+		-drive file=$(SWAP),format=raw,if=ide,index=3,media=disk \
+		-serial stdio
 
 clean:
 	rm -f $(OBJS) $(KELF) $(BIN) $(ISO) user/*.elf

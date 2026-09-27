@@ -5,6 +5,33 @@
 #include "console.h"
 #include "drivers/input.h"
 
+/* Console output buffer: batch writes to reduce VGA framebuffer updates.
+ * Flushes on newline or when buffer is full. */
+#define CONSOLE_BUF_SIZE 256
+static char console_write_buf[CONSOLE_BUF_SIZE];
+static uint32_t console_write_pos = 0;
+
+static void console_flush_buf(void) {
+    if (console_write_pos == 0) return;
+    for (uint32_t i = 0; i < console_write_pos; i++) {
+        console_putchar(console_write_buf[i]);
+    }
+    console_write_pos = 0;
+}
+
+static void console_buffered_putc(char c) {
+    if (console_write_pos >= CONSOLE_BUF_SIZE - 1) {
+        console_flush_buf();
+    }
+    console_write_buf[console_write_pos++] = c;
+    if (c == '\n') console_flush_buf();
+}
+
+/* Force flush - call from shell prompt output */
+void console_force_flush(void) {
+    console_flush_buf();
+}
+
 static struct stream console_stream = { 1, NULL, 0, 0, 0 };
 
 struct stream *stream_console(void) {
@@ -70,7 +97,7 @@ void st_putc(struct stream *s, char c) {
         return;
     }
     if (s->console) {
-        console_putchar(c);
+        console_buffered_putc(c);
         return;
     }
     if (stream_grow(s, s->len + 2) < 0) {
@@ -86,7 +113,7 @@ void st_write(struct stream *s, const char *data, uint32_t len) {
     }
     if (s->console) {
         for (uint32_t i = 0; i < len; i++) {
-            console_putchar(data[i]);
+            console_buffered_putc(data[i]);
         }
         return;
     }
@@ -244,4 +271,27 @@ char *st_read_all(struct stream *s, uint32_t *len) {
         *len = used;
     }
     return out;
+}
+
+int stream_read(struct stream *s, void *buf, uint32_t size) {
+    if (!s) return -1;
+    if (s->console) {
+        /* For console, read one line at a time */
+        char line[512];
+        int n = st_getline(s, line, sizeof(line));
+        if (n < 0) return n;
+        if ((uint32_t)n > size) n = size;
+        memcpy(buf, line, n);
+        if ((uint32_t)n < size) {
+            ((char *)buf)[n] = '\n';
+            n++;
+        }
+        return n;
+    }
+    if (s->pos >= s->len) return 0;
+    uint32_t remaining = s->len - s->pos;
+    if (remaining > size) remaining = size;
+    memcpy(buf, s->buf + s->pos, remaining);
+    s->pos += remaining;
+    return remaining;
 }

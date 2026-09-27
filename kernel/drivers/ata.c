@@ -65,8 +65,12 @@ static uint16_t ide_ctrl_base[2];
 static uint32_t ide_bm_base;
 
 static void ata_delay(struct ata_device *dev) {
+    /* 400 ns minimum per ATA spec. On modern hardware a simple I/O wait
+     * (or a few pause instructions) is more reliable than reading the
+     * control register 4 times, which can be surprisingly slow on some
+     * PCI bridges. */
     for (int i = 0; i < 4; i++) {
-        inb(dev->ctrl_base);
+        io_wait();
     }
 }
 
@@ -150,9 +154,13 @@ static int ata_wait_irq(int ch, uint32_t timeout_ticks) {
             ok = 0;
             break;
         }
+        /* Clear the pending flag BEFORE sleeping, otherwise an interrupt
+         * that arrives between the check and the wait is lost. */
+        channels[ch].irq_fired = 0;
+        irq_restore(f);
         sched_wait_on_timeout((const void *)&channels[ch].irq_fired, "disk", (uint32_t)left);
+        f = irq_save();
     }
-    channels[ch].irq_fired = 0;
     irq_restore(f);
     return ok ? 0 : -1;
 }

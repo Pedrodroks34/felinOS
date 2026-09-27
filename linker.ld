@@ -1,4 +1,4 @@
-ENTRY(_start)
+ENTRY(boot32_entry)
 
 SECTIONS
 {
@@ -19,6 +19,13 @@ SECTIONS
     . = 0x8000;
     .ap_tramp ALIGN(16) : {
         *(.ap_tramp)
+    }
+
+    /* 32-bit protected-mode entry point for multiboot/PVH boot. Must be below 1M.
+     * Placed here alongside the AP trampoline so QEMU's -kernel loader can jump
+     * to it directly via the PVH note. */
+    .boot32 ALIGN(16) : {
+        *(.boot32)
     }
 
     /* Xen PVH note, so QEMU's -kernel loader can boot the kernel with no

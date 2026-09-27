@@ -454,28 +454,68 @@ int cmd_mv(int argc, char **argv, struct stream *in, struct stream *out) {
 
 int cmd_cat(int argc, char **argv, struct stream *in, struct stream *out) {
     int numbered = cmd_has_flag(argc, argv, "-n");
-    uint32_t len = 0;
-    char *text = cmd_collect_input(argc, argv, 1, in, out, "cat", &len);
+    int files = 0;
 
-    if (!text) {
-        return 1;
+    for (int i = 1; i < argc; i++) {
+        if (!cmd_is_flag(argv[i])) files++;
     }
-    if (!numbered) {
-        st_write(out, text, len);
-        if (len && text[len - 1] != '\n') {
-            st_putc(out, '\n');
+
+    if (files == 0) {
+        /* Read from stdin and stream to stdout */
+        char buf[4096];
+        while (1) {
+            int n = stream_read(in ? in : stream_console(), buf, sizeof(buf));
+            if (n <= 0) break;
+            st_write(out, buf, n);
         }
-        kfree(text);
         return 0;
     }
 
-    char **lines;
-    int count = cmd_split_lines(text, &lines);
-    for (int i = 0; i < count; i++) {
-        st_printf(out, "%6u  %s\n", (uint32_t)(i + 1), lines[i]);
+    for (int i = 1; i < argc; i++) {
+        if (cmd_is_flag(argv[i])) continue;
+
+        struct vfs_file *f;
+        int r = vfs_open(argv[i], VFS_O_READ, &f);
+        if (r < 0) {
+            cmd_vfs_error(out, "cat", argv[i], r);
+            continue;
+        }
+
+        if (numbered) {
+            /* Numbered mode: read line by line */
+            char linebuf[4096];
+            uint32_t lineno = 1;
+            uint32_t linepos = 0;
+            char buf[4096];
+
+            while (1) {
+                int n = vfs_read(f, buf, sizeof(buf));
+                if (n <= 0) break;
+                for (int j = 0; j < n; j++) {
+                    if (buf[j] == '\n' || linepos >= sizeof(linebuf) - 1) {
+                        linebuf[linepos] = '\0';
+                        st_printf(out, "%6u  %s\n", lineno++, linebuf);
+                        linepos = 0;
+                    } else {
+                        linebuf[linepos++] = buf[j];
+                    }
+                }
+            }
+            if (linepos > 0) {
+                linebuf[linepos] = '\0';
+                st_printf(out, "%6u  %s\n", lineno, linebuf);
+            }
+        } else {
+            /* Stream mode: direct copy with 4KB buffer */
+            char buf[4096];
+            while (1) {
+                int n = vfs_read(f, buf, sizeof(buf));
+                if (n <= 0) break;
+                st_write(out, buf, n);
+            }
+        }
+        vfs_close(f);
     }
-    kfree(lines);
-    kfree(text);
     return 0;
 }
 

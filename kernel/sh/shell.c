@@ -8,6 +8,7 @@
 #include "lib/string.h"
 #include "lib/heap.h"
 #include "lib/format.h"
+#include "sh/stream.h"
 
 #define ENV_MAX      32
 #define ALIAS_MAX    16
@@ -474,6 +475,7 @@ void shell_readline(const char *prompt, char *buf) {
     saved[0] = '\0';
 
     console_write(prompt);
+    console_force_flush();
 
     size_t home_row, home_col;
     vga_get_cursor(&home_col, &home_row);
@@ -489,6 +491,7 @@ void shell_readline(const char *prompt, char *buf) {
                 console_putchar('\n');
             }
             console_write(prompt);
+            console_force_flush();
             vga_get_cursor(&home_col, &home_row);
             last_len = 0;
             epoch = console_epoch();
@@ -587,6 +590,7 @@ void shell_readline(const char *prompt, char *buf) {
             case 12:
                 console_clear();
                 console_write(prompt);
+                console_force_flush();
                 vga_get_cursor(&home_col, &home_row);
                 last_len = 0;
                 epoch = console_epoch();
