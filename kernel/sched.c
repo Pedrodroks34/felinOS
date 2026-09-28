@@ -33,6 +33,8 @@ static int early_preempt;
 static uint32_t wait_seq_counter;
 static uint32_t atomic_bugs;
 static char atomic_bug_task[SCHED_NAME_LEN];
+static uint32_t reserved_shell_stack;
+static uint32_t reserved_shell_frames;
 
 static void runq_push(struct task *t) {
     t->state = TASK_READY;
@@ -180,6 +182,11 @@ void sched_init(void) {
     started = 1;
 }
 
+void sched_reserve_shell_stack(void) {
+    reserved_shell_frames = (SHELL_STACK_BYTES + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
+    reserved_shell_stack = pmm_alloc_contiguous(reserved_shell_frames);
+}
+
 void sched_init_ap(void) {
     /* For APs, just set up the current task pointer */
     started = 1;
@@ -257,9 +264,11 @@ static void reap_orphans(void) {
     }
 }
 
-struct task *task_new(const char *name, void (*entry)(void *), void *arg,
-                      uint32_t stack_bytes, struct vm_space *space, int user) {
-    uint32_t frames = (stack_bytes + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
+static struct task *task_new_ex(const char *name, void (*entry)(void *), void *arg,
+                                uint32_t stack_bytes, struct vm_space *space, int user,
+                                uint32_t preallocated_stack, uint32_t preallocated_frames) {
+    uint32_t frames = preallocated_stack ? preallocated_frames
+                                          : (stack_bytes + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
     struct task *t = NULL;
 
     reap_orphans();
@@ -281,7 +290,7 @@ struct task *task_new(const char *name, void (*entry)(void *), void *arg,
     t->pid = next_pid++;
     irq_restore(f);
 
-    uint32_t stack = pmm_alloc_contiguous(frames);
+    uint32_t stack = preallocated_stack ? preallocated_stack : pmm_alloc_contiguous(frames);
     if (!stack) {
         memset(t, 0, sizeof(*t));
         return NULL;
@@ -311,6 +320,11 @@ struct task *task_new(const char *name, void (*entry)(void *), void *arg,
     t->ksp = (uint64_t)(uintptr_t)sp;
     strlcpy(t->name, name ? name : "task", SCHED_NAME_LEN);
     return t;
+}
+
+struct task *task_new(const char *name, void (*entry)(void *), void *arg,
+                      uint32_t stack_bytes, struct vm_space *space, int user) {
+    return task_new_ex(name, entry, arg, stack_bytes, space, user, 0, 0);
 }
 
 void task_start(struct task *t) {
@@ -709,14 +723,13 @@ int task_collect(int ppid, int *pid, int *code, char *name, uint32_t size) {
 }
 
 void sched_run(void (*shell_entry)(void *)) {
-    shell_task = task_new("vsh", shell_entry, NULL, SHELL_STACK_BYTES, vmm_kernel_space(), 0);
+    shell_task = task_new_ex("vsh", shell_entry, NULL, SHELL_STACK_BYTES, vmm_kernel_space(), 0,
+                             reserved_shell_stack, reserved_shell_frames);
     if (shell_task) {
         foreground = shell_task->pid;
         task_start(shell_task);
     } else {
-        /* Without this the loop below finds an empty run queue and parks in
-         * 'sti; hlt' forever: a silent hang with no prompt and no panic, which
-         * is indistinguishable from a boot that stopped on its own. Say why. */
+        kprintf("\n  [FAIL] could not start the shell: out of memory\n");
         klog("sched: cannot create the shell task (no free slot, or no %u "
              "contiguous frames for its stack)", SHELL_STACK_BYTES);
     }

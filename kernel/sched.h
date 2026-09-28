@@ -102,6 +102,7 @@ struct sched_stats {
 };
 
 void sched_init(void);
+void sched_reserve_shell_stack(void);
 void sched_run(void (*shell_entry)(void *)) __attribute__((noreturn));
 int sched_active(void);
 int sched_can_sleep(void);

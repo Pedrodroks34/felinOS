@@ -48,7 +48,10 @@ void keyboard_set_break_hook(int (*hook)(void)) {
     break_hook = hook;
 }
 
+static void keyboard_drain_hw(void);
+
 int keyboard_pending(void) {
+    keyboard_drain_hw();
     return buf_head != buf_tail;
 }
 
@@ -97,8 +100,7 @@ static void handle_extended(uint8_t code) {
     }
 }
 
-static void keyboard_callback(struct regs *r) {
-    uint8_t code = inb(KBD_DATA_PORT);
+static void process_scancode(uint8_t code) {
 
     if (code == 0xE0) {
         extended = 1;
@@ -174,6 +176,39 @@ static void keyboard_callback(struct regs *r) {
     push_key((int)(unsigned char)c);
 }
 
+static void keyboard_callback(struct regs *r) {
+    (void)r;
+    process_scancode(inb(KBD_DATA_PORT));
+}
+
+/* Drain the i8042 output buffer by polling, so typing still works when the
+ * IRQ1 never reaches us (e.g. VirtualBox I/O APIC routing). Bit 5 marks
+ * auxiliary (mouse) bytes, which are discarded. */
+static void keyboard_drain_hw(void) {
+    uint32_t f = irq_save();
+    for (int i = 0; i < 64; i++) {
+        uint8_t st = inb(KBD_STATUS_PORT);
+        if (!(st & 0x01)) {
+            break;
+        }
+        uint8_t code = inb(KBD_DATA_PORT);
+        if (!(st & 0x20)) {
+            process_scancode(code);
+        }
+    }
+    irq_restore(f);
+}
+
+static void kbc_wait_write(void) {
+    for (int i = 0; i < 100000 && (inb(KBD_STATUS_PORT) & 0x02); i++) {
+    }
+}
+
+static void kbc_wait_read(void) {
+    for (int i = 0; i < 100000 && !(inb(KBD_STATUS_PORT) & 0x01); i++) {
+    }
+}
+
 void keyboard_init(void) {
     buf_head = 0;
     buf_tail = 0;
@@ -182,10 +217,25 @@ void keyboard_init(void) {
     alt_down = 0;
     caps_on = 0;
     extended = 0;
+    for (int i = 0; i < 16 && (inb(KBD_STATUS_PORT) & 0x01); i++) {
+        inb(KBD_DATA_PORT);
+    }
+    kbc_wait_write();
+    outb(KBD_STATUS_PORT, 0xAE);
+    kbc_wait_write();
+    outb(KBD_STATUS_PORT, 0x20);
+    kbc_wait_read();
+    uint8_t cfg = inb(KBD_DATA_PORT);
+    cfg = (uint8_t)((cfg | 0x01 | 0x40) & ~0x10);
+    kbc_wait_write();
+    outb(KBD_STATUS_PORT, 0x60);
+    kbc_wait_write();
+    outb(KBD_DATA_PORT, cfg);
     irq_install_handler(1, keyboard_callback);
 }
 
 int keyboard_poll(void) {
+    keyboard_drain_hw();
     if (buf_head == buf_tail) {
         return -1;
     }

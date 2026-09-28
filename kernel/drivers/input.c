@@ -96,7 +96,7 @@ int input_getkey(void) {
         }
         uint32_t f = irq_save();
         if (!keyboard_pending() && !serial_pending()) {
-            sched_wait_on(sched_input_channel(), "input");
+            sched_wait_on_timeout(sched_input_channel(), "input", 2);
         }
         irq_restore(f);
     }

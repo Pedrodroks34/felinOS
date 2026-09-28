@@ -115,6 +115,7 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     uint32_t mem_top = 0x100000u + system_mem_upper_kb() * 1024u;
 
     pmm_init(mem_top);
+    sched_reserve_shell_stack();
     snprintf(detail, sizeof(detail), "%u frames (%u MB), %u free",
              pmm_total_frames(),
              (pmm_total_frames() * PMM_FRAME_SIZE) / (1024u * 1024u),

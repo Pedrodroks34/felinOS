@@ -154,10 +154,17 @@ static int ata_wait_irq(int ch, uint32_t timeout_ticks) {
             ok = 0;
             break;
         }
-        /* Clear the pending flag BEFORE sleeping, otherwise an interrupt
-         * that arrives between the check and the wait is lost. */
+        /* Clear the pending flag and go to sleep with interrupts still
+         * disabled. sched_wait_on_timeout() only marks us TASK_BLOCKED
+         * once it actually runs; re-enabling interrupts here first (as
+         * the previous fix did) leaves a window where the IRQ can land,
+         * call sched_wake(), find no BLOCKED task yet (we're still
+         * TASK_RUNNING), and do nothing -- then we unconditionally block
+         * anyway and sleep out the full timeout despite the data already
+         * being ready. Keeping cli() asserted across the call closes
+         * that window; schedule() re-enables interrupts on our behalf
+         * once we've actually switched away. */
         channels[ch].irq_fired = 0;
-        irq_restore(f);
         sched_wait_on_timeout((const void *)&channels[ch].irq_fired, "disk", (uint32_t)left);
         f = irq_save();
     }
@@ -343,12 +350,20 @@ static int ata_find_pci_controller(void) {
 
         if (pci->class_code == 0x01 && pci->subclass == 0x01) {
             ide_pci_dev = pci;
-            /* The two channels sit on consecutive legacy IRQs (14 and 15).
-             * Giving them the same line let the secondary's
-             * irq_install_handler() overwrite the primary's handler, so
-             * commands issued on the primary channel never got serviced. */
-            ide_irq[0] = pci->irq;
-            ide_irq[1] = pci->irq + 1;
+            /* PCI IDE controllers can run each channel in native mode (its
+             * own PCI-routed IRQ, given by the Interrupt Line register) or
+             * legacy/compatibility mode (fixed ISA IRQ14/15, regardless of
+             * what that register says). Program Interface bits 0 and 2
+             * say which: 0 = compatibility for that channel. QEMU/VirtualBox
+             * default both channels to compatibility mode with IRQ 0/1 in
+             * the config space -- installing handlers there means the real
+             * IRQ14/15 never reaches ata_channel_irq(), so every read falls
+             * back to the 5s-per-sector timeout path instead of the IRQ. */
+            uint8_t progif = (uint8_t)(pci_read_config(pci->bus, pci->slot, pci->func, 0x08) >> 8);
+            int primary_native = (progif & 0x01) != 0;
+            int secondary_native = (progif & 0x04) != 0;
+            ide_irq[0] = primary_native ? pci->irq : 14;
+            ide_irq[1] = secondary_native ? pci->irq : 15;
 
             uint32_t bar0 = pci_read_config(pci->bus, pci->slot, pci->func, 0x10);
             uint32_t bar1 = pci_read_config(pci->bus, pci->slot, pci->func, 0x14);
@@ -370,8 +385,8 @@ static int ata_find_pci_controller(void) {
 
             pci_write_config(pci->bus, pci->slot, pci->func, 0x04, 0x07);
 
-            klog("ata: PCI IDE at %02x:%02x.%x, IRQ %u, BMIDE at 0x%08x",
-                 pci->bus, pci->slot, pci->func, pci->irq, ide_bm_base);
+            klog("ata: PCI IDE at %02x:%02x.%x, IRQ %u/%u, BMIDE at 0x%08x",
+                 pci->bus, pci->slot, pci->func, ide_irq[0], ide_irq[1], ide_bm_base);
             return 1;
         }
     }
