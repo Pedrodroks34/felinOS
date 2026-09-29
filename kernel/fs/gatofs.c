@@ -177,12 +177,14 @@ static void sb_flush(void) {
 
 /* ---- inodes ---- */
 static int iread(uint32_t ino, struct vinode *in) {
+    if (ino >= sb.inode_count) return -1;
     uint8_t *p = cget(sb.itab_start + ino / IPB);
     if (!p) return -1;
     memcpy(in, p + (ino % IPB) * INO_SIZE, sizeof(*in));
     return 0;
 }
 static int iwrite(uint32_t ino, const struct vinode *in) {
+    if (ino >= sb.inode_count) return -1;
     uint32_t b = sb.itab_start + ino / IPB;
     uint8_t *p = cget(b);
     if (!p) return -1;
@@ -264,6 +266,7 @@ static void bfree(uint32_t b) {
 /* ---- block mapping ---- */
 /* Returns slot value in table block `t`, allocating (zeroed table or data) if asked. */
 static uint32_t slot(uint32_t t, uint32_t i, int alloc, int zero, struct vinode *in, int *isnew) {
+    if (i >= PPB) return 0;
     uint8_t *p = cget(t);
     if (!p) return 0;
     uint32_t v = ((uint32_t *)p)[i];

@@ -72,6 +72,11 @@ static uint32_t find_run(uint32_t frames) {
         if (f >= total_frames) {
             f -= total_frames;
         }
+        if (f == 0) {
+            /* a run must be physically contiguous: it cannot continue across
+             * the end of memory back to frame 0 */
+            run = 0;
+        }
         if (bitmap_test(f)) {
             run = 0;
             continue;
