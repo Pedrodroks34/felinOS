@@ -20,3 +20,4 @@ iso/boot/grub/eltorito.img
 
 # writable OVMF variable store, copied fresh by 'make run-efi'
 iso/OVMF_VARS.fd
+__pycache__/

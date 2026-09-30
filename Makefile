@@ -81,25 +81,21 @@ kernel/progs.o: kernel/progs.s $(addsuffix .elf,$(USER_PROGS))
 	$(AS) $(ASFLAGS) -I. -c $< -o $@
 
 # GRUB's Multiboot 1 loader (and QEMU -kernel) only load ELF32, so the 64-bit
-# kernel is converted; the 32-bit boot stub switches to long mode itself.
-# We must explicitly set VMAs because objcopy's default conversion loses the
-# 64-bit layout: the 32-bit entry point must be below 1M, and the kernel text
-# must be at 1M. The --change-section-vma flags preserve the 64-bit layout.
+# kernel is converted to a 32-bit ELF for it; the 32-bit boot stub in boot.s
+# switches to long mode itself. All addresses are already resolved by the
+# linker (linker.ld) and fit comfortably under 4 GiB, so a plain bit-width
+# conversion is enough -- objcopy keeps every section's real VMA as-is.
+# (A previous version of this rule force-overrode each section's VMA by
+# hand, including setting .ap_tramp and .boot32 to the *same* address,
+# which corrupted whichever of the two objcopy placed second; the actual
+# 32-bit entry point address is already carried correctly in the PVH note
+# and the Multiboot header, both written by the linker, so none of that
+# was needed.)
 $(KELF): $(OBJS)
 	$(LD) $(LDFLAGS) -o $(KELF) $(OBJS)
 
 $(BIN): $(KELF)
-	objcopy -O elf32-i386 \
-	    --change-section-vma .multiboot=0x1000 \
-	    --change-section-vma .ap_handover=0x7000 \
-	    --change-section-vma .ap_tramp=0x8000 \
-	    --change-section-vma .boot32=0x8000 \
-	    --change-section-vma .text=0x100000 \
-	    --change-section-vma .rodata=0x143000 \
-	    --change-section-vma .data=0x174000 \
-	    --change-section-vma .bss=0x174b48 \
-	    --set-start=0x80c0 \
-	    $(KELF) $(BIN)
+	objcopy -O elf32-i386 $(KELF) $(BIN)
 
 $(ISO): $(BIN) boot/grub/grub.cfg tools/mkiso.sh
 	tools/mkiso.sh $(BIN) boot/grub/grub.cfg $(ISO)
@@ -191,7 +187,6 @@ test: $(BIN) $(IMAGES)
 		-kernel $(BIN) $(QEMU_COMMON) \
 		-display none \
 		-monitor none \
-		-no-reboot \
-		-no-shutdown
+		-no-reboot
 
 .PHONY: all run run-efi run-kernel run-serial run-smp clean distclean test

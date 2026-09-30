@@ -20,7 +20,7 @@ import sys
 import time
 
 PROMPT = re.compile(r"root@felinos:\S*\s*\$\s")
-SUMMARY = re.compile(r"^Total:\s+(\d+)\s+Passed:\s+(\d+)\s+Failed:\s+(\d+)\s*$", re.M)
+SUMMARY = re.compile(r"^Checks:\s+(\d+)\s+Passed:\s+(\d+)\s+Failed:\s+(\d+)\s*$", re.M)
 PANIC = re.compile(r"KERNEL PANIC|Exception \d+:")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 

@@ -2,15 +2,20 @@ ENTRY(boot32_entry)
 
 SECTIONS
 {
-    .multiboot ALIGN(4) : {
-        *(.multiboot)
-    }
-
     /* Low memory the application processors execute from. INIT resets an AP
      * to the real-mode reset vector, so the code has to sit below 1 MiB in
      * plain physical memory, and the 16-bit entry point has to be linkable
      * to a known address rather than copied in at runtime. The kernel's own
-     * identity mapping already covers both pages. */
+     * identity mapping already covers both pages.
+     *
+     * Note the Multiboot1 header (.multiboot) is NOT placed here but inside
+     * .text at 1M below, so it lands well past the first 8192 bytes of the
+     * file and is not a spec-valid Multiboot1 header. That is deliberate:
+     * QEMU/SeaBIOS's -kernel loader ('make run-kernel', 'make test',
+     * 'make run-smp') tries Multiboot1 before the Xen PVH note and picks
+     * /rom@genroms/multiboot_dma.bin as soon as the header validates,
+     * which then never reaches boot32_entry. Keeping it invalid makes
+     * SeaBIOS use /rom@genroms/pvh.bin, as the PVH note below intends. */
     . = 0x7000;
     .ap_handover ALIGN(8) : {
         *(.ap_handover)
@@ -19,13 +24,6 @@ SECTIONS
     . = 0x8000;
     .ap_tramp ALIGN(16) : {
         *(.ap_tramp)
-    }
-
-    /* 32-bit protected-mode entry point for multiboot/PVH boot. Must be below 1M.
-     * Placed here alongside the AP trampoline so QEMU's -kernel loader can jump
-     * to it directly via the PVH note. */
-    .boot32 ALIGN(16) : {
-        *(.boot32)
     }
 
     /* Xen PVH note, so QEMU's -kernel loader can boot the kernel with no
@@ -43,6 +41,15 @@ SECTIONS
 
     .text ALIGN(4K) : {
         text_start = .;
+        *(.multiboot)
+        /* 32-bit protected-mode entry (PVH/multiboot). Must live up here
+         * with the rest of the kernel, NOT in low memory: QEMU loads ELF
+         * segments below 1 MiB as ROM blobs into RAM, and SeaBIOS then
+         * reuses 0x7000-0x9000 as stack/scratch before pvh.bin jumps to the
+         * entry point, so an entry placed there runs zeroed memory (#UD,
+         * triple fault). The AP trampoline pages above are only needed
+         * much later. */
+        *(.boot32)
         *(.text)
     }
     . = ALIGN(4K);
