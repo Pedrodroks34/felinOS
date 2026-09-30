@@ -14,11 +14,13 @@ static uint32_t rxq_head, rxq_tail, rxq_count;
 static spinlock_t rxq_lock = SPINLOCK_INIT("netif-rxq");
 static const int rxq_chan;
 
-void netif_register(const uint8_t *mac, const char *driver_name, int (*transmit)(struct netbuf *nb)) {
+void netif_register(const uint8_t *mac, const char *driver_name, int (*transmit)(struct netbuf *nb),
+                    const char *(*link_status)(void)) {
     memset(&g_netif, 0, sizeof(g_netif));
     mac_copy(g_netif.mac, mac);
     strlcpy(g_netif.driver_name, driver_name, sizeof(g_netif.driver_name));
     g_netif.transmit = transmit;
+    g_netif.link_status = link_status;
     g_netif.up = 1;
     g_netif_present = 1;
 }

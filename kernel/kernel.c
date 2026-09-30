@@ -34,6 +34,8 @@
 #include "sched.h"
 #include "drivers/input.h"
 #include "drivers/e1000.h"
+#include "drivers/rtl8139.h"
+#include "drivers/rtl8169.h"
 #include "bcache.h"
 #include "net/netbuf.h"
 #include "net/netif.h"
@@ -75,7 +77,7 @@ static int net_init(void) {
     tcp_init();
     socket_init();
 
-    int has_nic = (e1000_init() == 0);
+    int has_nic = (e1000_init() == 0 || rtl8169_init() == 0 || rtl8139_init() == 0);
     if (has_nic) {
         netif_start_rx_thread();
         kthread_create("netmaint", net_maint_thread, NULL);

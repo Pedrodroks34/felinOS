@@ -17,6 +17,14 @@ Testado em QEMU (ISO via GRUB BIOS): `selftest` 35/35, `simplecc` compila e exec
   bloco arbitrário. Agora retorna erro se `ino >= inode_count`.
 - **gatofs.c `slot()`**: sem checagem do índice dentro da tabela; agora `i >= PPB` retorna 0.
 
+- **net: `dhcp` (e qualquer UDP/TCP/ICMP com payload grande) dava KERNEL PANIC**: `udp_sendto`,
+  `tcp` e `icmp` colocavam o payload com `netbuf_push()`, que consome os 128 bytes reservados
+  para cabeçalhos. Payload > ~86 bytes (DHCP tem ~300) fazia `netbuf_push` retornar NULL e o
+  `memcpy` escrevia em 0x0 -> page fault. Novo `netbuf_put()` (append com checagem de limite) e
+  retorno de erro em vez de crash. Isso também deixava o shell sem prompt quando `dhcp` estava no
+  `~/.vshrc`, pois o `.vshrc` roda antes do prompt.
+- **shell**: `ifconfig dns <ip>` e `ifconfig <ip> <mask> <gw> <dns>` para configurar o DNS à mão.
+
 ## Falsos positivos da lista antiga (verificados, código já está correto)
 - `refs_frames` do PMM (já é `/256`), `find_run` sem `search_from` (usa), `static tmp[BS]` em
   `pread_i/pwrite_i/dir_*` (não existem no código), `serial_read_nonblock` sem `irq_save`

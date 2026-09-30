@@ -41,7 +41,8 @@ FATDISK_MB ?= 64
 # the host, so dhcp, dns, wget and nc work out of the box. Override with
 # NETDEV_BACKEND=socket to join a real LAN instead.
 NETDEV_BACKEND ?= user
-QEMU_NET = -netdev $(NETDEV_BACKEND),id=net0 -device e1000,netdev=net0
+NIC_MODEL ?= e1000
+QEMU_NET = -netdev $(NETDEV_BACKEND),id=net0 -device $(NIC_MODEL),netdev=net0
 
 # index 0 is the GatoFS root, 1 the secondary GatoFS volume, 2 the FAT32 test
 # disk and 3 the swap area.

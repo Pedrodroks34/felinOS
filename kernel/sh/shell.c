@@ -159,7 +159,7 @@ static const struct command commands[] = {
     { "shutdown", "power the machine off", "shutdown", cmd_poweroff },
     { "halt", "halt the CPU", "halt", cmd_halt },
     { "exit", "leave the current shell session", "exit", cmd_exit },
-    { "ifconfig", "show or set the network interface", "ifconfig [ip netmask [gateway]]", cmd_ifconfig },
+    { "ifconfig", "show or set the network interface", "ifconfig [ip netmask [gateway [dns]] | dns <ip>]", cmd_ifconfig },
     { "ping", "send ICMP echo requests to a host", "ping <host> [count]", cmd_ping },
     { "dhcp", "obtain an address lease via DHCP", "dhcp", cmd_dhcp },
     { "dns", "resolve a hostname to an IPv4 address", "dns <hostname>", cmd_dns },

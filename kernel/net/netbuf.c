@@ -71,6 +71,20 @@ void *netbuf_push(struct netbuf *nb, uint32_t n) {
     return nb->data;
 }
 
+/* Append n payload bytes after the current data (returns NULL if it does not
+ * fit). Payloads must be added with this, not netbuf_push(): push consumes the
+ * NETBUF_HEAD bytes reserved for protocol headers, so any payload over ~86
+ * bytes made push return NULL and the following memcpy crashed the kernel. */
+void *netbuf_put(struct netbuf *nb, uint32_t n) {
+    uint32_t used = (uint32_t)(nb->data - nb->storage) + nb->len;
+    if (n > NETBUF_CAP - used) {
+        return NULL;
+    }
+    uint8_t *p = nb->data + nb->len;
+    nb->len = (uint16_t)(nb->len + n);
+    return p;
+}
+
 void *netbuf_pull(struct netbuf *nb, uint32_t n) {
     uint8_t *old;
 

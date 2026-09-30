@@ -7,7 +7,6 @@
 #include "net/dhcp.h"
 #include "net/dns.h"
 #include "drivers/pit.h"
-#include "drivers/e1000.h"
 
 int cmd_ifconfig(int argc, char **argv, struct stream *in, struct stream *out) {
     (void)in;
@@ -18,8 +17,18 @@ int cmd_ifconfig(int argc, char **argv, struct stream *in, struct stream *out) {
         return 1;
     }
 
+    if (argc == 3 && strcmp(argv[1], "dns") == 0) {
+        uint32_t dns;
+        if (ip4_from_str(argv[2], &dns) != 0) {
+            st_puts(out, "ifconfig: invalid DNS server\n");
+            return 1;
+        }
+        netif_set_dns(dns);
+        st_puts(out, "DNS server set.\n");
+        return 0;
+    }
     if (argc >= 3) {
-        uint32_t ip, mask, gw = 0;
+        uint32_t ip, mask, gw = 0, dns = 0;
         if (ip4_from_str(argv[1], &ip) != 0 || ip4_from_str(argv[2], &mask) != 0) {
             st_puts(out, "ifconfig: invalid address\n");
             return 1;
@@ -28,7 +37,14 @@ int cmd_ifconfig(int argc, char **argv, struct stream *in, struct stream *out) {
             st_puts(out, "ifconfig: invalid gateway\n");
             return 1;
         }
+        if (argc >= 5 && ip4_from_str(argv[4], &dns) != 0) {
+            st_puts(out, "ifconfig: invalid DNS server\n");
+            return 1;
+        }
         netif_set_addr(ip, mask, gw);
+        if (argc >= 5) {
+            netif_set_dns(dns);
+        }
         st_puts(out, "Interface configured.\n");
         return 0;
     }
@@ -40,7 +56,8 @@ int cmd_ifconfig(int argc, char **argv, struct stream *in, struct stream *out) {
     ip4_to_str(nif->gateway, gwstr);
     ip4_to_str(nif->dns_server, dns);
 
-    st_printf(out, "%s: driver %s  link %s\n", "net0", nif->driver_name, e1000_link_status());
+    st_printf(out, "%s: driver %s  link %s\n", "net0", nif->driver_name,
+              nif->link_status ? nif->link_status() : "unknown");
     st_printf(out, "    ether %s\n", mac);
     st_printf(out, "    inet %s  netmask %s  gateway %s\n", ip, mask, gwstr);
     st_printf(out, "    dns %s\n", dns);

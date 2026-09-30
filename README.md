@@ -168,6 +168,9 @@ kernel/
     apic.c           local APIC, I/O APIC, MADT, INIT/SIPI bring-up of the APs
     acpi.c           RSDP/RSDT/XSDT/FADT/MADT parser, _S5_, ACPI reset register
     e1000.c          Intel e1000 NIC: descriptors, TX/RX rings
+    rtl.c            Realtek shared code: BAR mapping, register access, polling fallback
+    rtl8139.c        Realtek RTL8139 NIC: one receive ring buffer, four transmit slots
+    rtl8169.c        Realtek RTL8168/8111/8169/8101 NIC: descriptor rings, PHY autonegotiation
     power.c          reboot, power off, halt (ACPI first, legacy ports as fallback)
     speaker.c        PC speaker tones
 
@@ -529,7 +532,10 @@ accounting are in place for them.
 ## Networking
 
 Gato has a TCP/IP stack over an Intel e1000, which is what QEMU's default
-`e1000` device presents. The layers are separate files under `kernel/net/`:
+`e1000` device presents. Realtek cards are supported too: the RTL8139 and the
+RTL8168/8111/8169/8101 family. The first supported card found on the PCI bus is
+used, in the order e1000, RTL8168/8169, RTL8139. `make run NIC_MODEL=rtl8139`
+boots QEMU with an emulated RTL8139. The layers are separate files under `kernel/net/`:
 the driver and the interface table, Ethernet framing with ARP, IPv4 with
 reassembly, ICMP, UDP, TCP, then the socket layer. DHCP configures an address
 and a gateway, and DNS resolves names.

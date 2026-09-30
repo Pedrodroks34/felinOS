@@ -36,7 +36,11 @@ void icmp_input(struct netbuf *nb, uint32_t src_ip) {
             return;
         }
         uint32_t payload_len = nb->len - sizeof(struct icmp_hdr);
-        uint8_t *body = (uint8_t *)netbuf_push(reply, payload_len);
+        uint8_t *body = (uint8_t *)netbuf_put(reply, payload_len);
+        if (!body) {
+            netbuf_free(reply);
+            return;
+        }
         if (payload_len > 0) {
             memcpy(body, nb->data + sizeof(struct icmp_hdr), payload_len);
         }
@@ -97,7 +101,7 @@ int icmp_ping(uint32_t dst_ip, uint16_t id, uint16_t seq, uint32_t timeout_ticks
         return -1;
     }
 
-    uint8_t *payload = (uint8_t *)netbuf_push(nb, ICMP_PAYLOAD_LEN);
+    uint8_t *payload = (uint8_t *)netbuf_put(nb, ICMP_PAYLOAD_LEN);
     for (int i = 0; i < ICMP_PAYLOAD_LEN; i++) {
         payload[i] = (uint8_t)('a' + (i % 23));
     }

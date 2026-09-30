@@ -153,7 +153,11 @@ int udp_sendto(struct udp_pcb *pcb, uint32_t ip, uint16_t port, const void *data
     if (!nb) {
         return -1;
     }
-    uint8_t *body = (uint8_t *)netbuf_push(nb, len);
+    uint8_t *body = (uint8_t *)netbuf_put(nb, len);
+    if (!body) {
+        netbuf_free(nb);
+        return -1;
+    }
     memcpy(body, data, len);
     struct udp_hdr *hdr = (struct udp_hdr *)netbuf_push(nb, UDP_HDR_LEN);
     hdr->src_port = net_htons(pcb->local_port);

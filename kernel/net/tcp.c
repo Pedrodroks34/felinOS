@@ -210,7 +210,12 @@ static int tcp_transmit(struct tcp_pcb *pcb, uint32_t seq, uint8_t flags,
         return -1;
     }
     if (len > 0) {
-        memcpy(netbuf_push(nb, len), data, len);
+        void *body = netbuf_put(nb, len);
+        if (!body) {
+            netbuf_free(nb);
+            return -1;
+        }
+        memcpy(body, data, len);
     }
     struct tcp_hdr *hdr = (struct tcp_hdr *)netbuf_push(nb, TCP_HDR_LEN);
     hdr->src_port = net_htons(pcb->local_port);

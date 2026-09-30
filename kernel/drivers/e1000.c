@@ -289,6 +289,6 @@ int e1000_init(void) {
     e1000_write(E1000_REG_IMS, E1000_ICR_LSC | E1000_ICR_RXT0 | E1000_ICR_RXO);
 
     nic_present = 1;
-    netif_register(nic_mac, "e1000", e1000_transmit);
+    netif_register(nic_mac, "e1000", e1000_transmit, e1000_link_status);
     return 0;
 }

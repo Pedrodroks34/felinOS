@@ -19,6 +19,7 @@ struct netbuf *netbuf_alloc(void);
 struct netbuf *netbuf_alloc_raw(void);
 void netbuf_free(struct netbuf *nb);
 void *netbuf_push(struct netbuf *nb, uint32_t n);
+void *netbuf_put(struct netbuf *nb, uint32_t n);
 void *netbuf_pull(struct netbuf *nb, uint32_t n);
 uint32_t netbuf_headroom(struct netbuf *nb);
 uint32_t netbuf_free_count(void);
