@@ -1,0 +1,83 @@
+# FelinOS syscall ABI implementation
+# Override musl's syscall assembly for FelinOS int 0x80 ABI
+
+--- a/src/thread/x86_64/syscall.s
++++ b/src/thread/x86_64/syscall.s
+@@ -1,30 +1,50 @@
+-/* Linux x86_64 syscall via syscall instruction */
++/* FelinOS x86_64 syscall via int 0x80 */
++/* ABI: rax=number, rdi/rsi/rdx/rcx/r8/r9=args */
++/* Returns: rax=result, negative errno on error */
++
++#include <syscall.h>
++
++.global __syscall
++.type __syscall,@function
++__syscall:
++	movq %rdi, %rax      /* syscall number in rax */
++	movq %rsi, %rdi      /* arg1 -> rdi */
++	movq %rdx, %rsi      /* arg2 -> rsi */
++	movq %rcx, %rdx      /* arg3 -> rdx */
++	movq %r8, %rcx       /* arg4 -> rcx */
++	movq %r9, %r8        /* arg5 -> r8 */
++	movq 8(%rsp), %r9    /* arg6 -> r9 (from stack) */
++	int $0x80            /* FelinOS syscall entry */
++	cmpq $-4095, %rax    /* check for error return */
++	ja 1f                /* if error, jump to error handler */
++	ret                  /* success: return result in rax */
++1:	negq %rax            /* convert negative errno to positive */
++	movq %rax, errno(%rip) /* store in errno */
++	movq $-1, %rax       /* return -1 */
++	ret
++
++.global __syscall_cp
++.type __syscall_cp,@function
++__syscall_cp:
++	/* Cancelable syscall entry point - same as __syscall for now */
++	jmp __syscall
++
++.global __syscall_ret
++.type __syscall_ret,@function
++__syscall_ret:
++	/* Return from syscall - just return */
++	ret
++
++.section .data
++.global errno
++.hidden errno
++errno:
++	.zero 8
++
+--- a/src/thread/x86_64/syscall_cp.s
++++ b/src/thread/x86_64/syscall_cp.s
+@@ -1,20 +1,10 @@
+-/* Linux cancelable syscall */
+ 
+-.global __syscall_cp
+-.type __syscall_cp,@function
+-__syscall_cp:
+-	movq %rdi, %rax
+-	movq %rsi, %rdi
+-	movq %rdx, %rsi
+-	movq %rcx, %rdx
+-	movq %r8, %r10
+-	movq %r9, %r8
+-	movq 8(%rsp), %r9
+-	syscall
+-	cmpq $-4095, %rax
+-	ja 1f
+-	ret
+-1:	negq %rax
+-	movq %rax, errno(%rip)
+-	movq $-1, %rax
+-	ret
++jmp __syscall
+
+--- a/src/thread/x86_64/__syscall_ret.s
++++ b/src/thread/x86_64/__syscall_ret.s
+@@ -1,10 +1,10 @@
+-.global __syscall_ret
+-.type __syscall_ret,@function
+-__syscall_ret:
+-	ret
++jmp __syscall_ret

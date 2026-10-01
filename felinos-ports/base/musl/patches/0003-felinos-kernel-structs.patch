@@ -1,0 +1,238 @@
+# FelinOS kernel structures compatibility
+# Adapt musl's kernel headers to match FelinOS definitions
+
+--- a/arch/x86_64/bits/stat.h
++++ b/arch/x86_64/bits/stat.h
+@@ -1,5 +1,7 @@
+ #ifndef _STAT_H
+ #define _STAT_H
+ 
++#include <felinos/vfs.h>
++
+ struct stat {
+-	dev_t st_dev;
+-	ino_t st_ino;
+-	mode_t st_mode;
+-	nlink_t st_nlink;
+-	uid_t st_uid;
+-	gid_t st_gid;
+-	dev_t st_rdev;
+-	off_t st_size;
+-	blksize_t st_blksize;
+-	blkcnt_t st_blocks;
+-	struct timespec st_atim;
+-	struct timespec st_mtim;
+-	struct timespec st_ctim;
+-	unsigned long __unused[3];
++	uint64_t st_dev;
++	uint64_t st_ino;
++	uint32_t st_mode;
++	uint32_t st_nlink;
++	uint32_t st_uid;
++	uint32_t st_gid;
++	uint64_t st_rdev;
++	int64_t  st_size;
++	int64_t  st_blksize;
++	int64_t  st_blocks;
++	struct timespec st_atim;
++	struct timespec st_mtim;
++	struct timespec st_ctim;
++	unsigned long __unused[3];
+ };
+ 
+ #define S_IFMT  0170000
+ #define S_IFSOCK 0140000
+ #define S_IFLNK  0120000
+ #define S_IFREG  0100000
+ #define S_IFBLK  0060000
+ #define S_IFDIR  0040000
+ #define S_IFCHR  0020000
+ #define S_IFIFO  0010000
+ #define S_ISUID  0004000
+ #define S_ISGID  0002000
+ #define S_ISVTX  0001000
+ 
+ #define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+ #define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+ #define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
+ #define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
+ #define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+ #define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
+ #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
+ 
+ #endif
+ 
+--- a/arch/x86_64/bits/dirent.h
++++ b/arch/x86_64/bits/dirent.h
+@@ -1,5 +1,7 @@
+ #ifndef _DIRENT_H
+ #define _DIRENT_H
+ 
++#include <felinos/vfs.h>
++
+ struct dirent {
+-	ino_t d_ino;
+-	off_t d_off;
+-	unsigned short d_reclen;
+-	unsigned char d_type;
+-	char d_name[256];
++	uint64_t d_ino;
++	int64_t  d_off;
++	uint16_t d_reclen;
++	uint8_t  d_type;
++	char     d_name[256];
+ };
+ 
+ #define DT_UNKNOWN 0
+ #define DT_REG     1
+ #define DT_DIR     2
+ #define DT_CHR     3
+ #define DT_BLK     4
+ #define DT_FIFO    5
+ #define DT_SOCK    6
+ #define DT_LNK     7
+ 
+ #endif
+ 
+--- a/arch/x86_64/bits/fcntl.h
++++ b/arch/x86_64/bits/fcntl.h
+@@ -1,5 +1,7 @@
+ #ifndef _FCNTL_H
+ #define _FCNTL_H
+ 
++#include <felinos/vfs.h>
++
+ #define O_RDONLY    00000000
+ #define O_WRONLY    00000001
+ #define O_RDWR      00000002
+ #define O_ACCMODE   00000003
+ #define O_CREAT     00000100
+ #define O_EXCL      00000200
+ #define O_NOCTTY    00000400
+ #define O_TRUNC     00001000
+ #define O_APPEND    00002000
+ #define O_NONBLOCK  00004000
+ #define O_DSYNC     00010000
+ #define O_SYNC      00401000
+ #define O_RSYNC     00401000
+ #define O_DIRECTORY 00200000
+ #define O_NOFOLLOW  00400000
+ #define O_CLOEXEC   02000000
+ 
++/* FelinOS VFS flags (mapped from kernel/vfs.h) */
++#define VFS_O_READ       0x0001
++#define VFS_O_WRITE      0x0002
++#define VFS_O_CREATE     0x0004
++#define VFS_O_TRUNC      0x0008
++#define VFS_O_APPEND     0x0010
++
+ #define F_DUPFD     0
+ #define F_GETFD     1
+ #define F_SETFD     2
+ #define F_GETFL     3
+ #define F_SETFL     4
+ #define F_GETLK     5
+ #define F_SETLK     6
+ #define F_SETLKW    7
+ 
+ #define FD_CLOEXEC  1
+ 
+ #define F_RDLCK     0
+ #define F_WRLCK     1
+ #define F_UNLCK     2
+ 
+ #endif
+ 
+--- a/arch/x86_64/bits/socket.h
++++ b/arch/x86_64/bits/socket.h
+@@ -1,5 +1,7 @@
+ #ifndef _SOCKET_H
+ #define _SOCKET_H
+ 
++#include <felinos/net.h>
++
+ #define SOCK_STREAM    1
+ #define SOCK_DGRAM     2
+ #define SOCK_RAW       3
+ #define SOCK_RDM       4
+ #define SOCK_SEQPACKET 5
+ 
+ #define SOCK_CLOEXEC   02000000
+ #define SOCK_NONBLOCK  00004000
+ 
+ #define AF_UNSPEC     0
+ #define AF_UNIX       1
+ #define AF_INET       2
+ #define AF_INET6      10
+ #define AF_NETLINK    16
+ 
+ #define PF_UNSPEC     AF_UNSPEC
+ #define PF_UNIX       AF_UNIX
+ #define PF_INET       AF_INET
+ #define PF_INET6      AF_INET6
+ #define PF_NETLINK    AF_NETLINK
+ 
+ #define SOL_SOCKET    1
+ 
+ #define SO_DEBUG       1
+ #define SO_REUSEADDR   2
+ #define SO_TYPE        3
+ #define SO_ERROR       4
+ #define SO_DONTROUTE   5
+ #define SO_BROADCAST   6
+ #define SO_SNDBUF      7
+ #define SO_RCVBUF      8
+ #define SO_SNDLOWAT    9
+ #define SO_RCVLOWAT    10
+ #define SO_SNDTIMEO    11
+ #define SO_RCVTIMEO    12
+ #define SO_ACCEPTCONN  13
+ #define SO_LINGER      14
+ #define SO_REUSEPORT   15
+ 
+ #define SHUT_RD        0
+ #define SHUT_WR        1
+ #define SHUT_RDWR      2
+ 
+ #define MSG_OOB        0x01
+ #define MSG_PEEK       0x02
+ #define MSG_DONTROUTE  0x04
+ #define MSG_CTRUNC     0x08
+ #define MSG_PROXY      0x10
+ #define MSG_TRUNC      0x20
+ #define MSG_DONTWAIT   0x40
+ #define MSG_EOR        0x80
+ #define MSG_WAITALL    0x100
+ #define MSG_FIN        0x200
+ #define MSG_SYN        0x400
+ #define MSG_CONFIRM    0x800
+ #define MSG_RST        0x1000
+ #define MSG_ERRQUEUE   0x2000
+ #define MSG_NOSIGNAL   0x4000
+ #define MSG_MORE       0x8000
+ #define MSG_WAITFORONE 0x10000
+ #define MSG_BATCH      0x40000
+ #define MSG_ZEROCOPY   0x4000000
+ #define MSG_FASTOPEN   0x20000000
+ #define MSG_CMSG_CLOEXEC 0x40000000
+ 
+ struct sockaddr {
+-	sa_family_t sa_family;
+-	char sa_data[14];
++	uint16_t sa_family;
++	char     sa_data[14];
+ };
+ 
+ struct sockaddr_storage {
+-	sa_family_t ss_family;
+-	unsigned long __ss_align;
+-	char __ss_padding[128 - sizeof(unsigned long) - sizeof(sa_family_t)];
++	uint16_t ss_family;
++	uint8_t  __ss_pad1[6];
++	unsigned long __ss_align;
++	char     __ss_padding[112];
+ };
+ 
+ #define sockaddr_storage_align 16
+ 
+ #endif

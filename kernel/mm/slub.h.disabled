@@ -1,0 +1,168 @@
+/*
+ * FelinOS Kernel - SLUB Allocator
+ * ===============================
+ * Per-CPU slab allocator with NUMA awareness
+ * Based on Linux kernel mm/slub.c
+ */
+
+#ifndef _FELINOS_SLUB_H
+#define _FELINOS_SLUB_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include "pmm.h"
+#include "sync.h"
+#include "lib/string.h"  /* for list_head */
+
+/* GFP flags for allocation */
+#define GFP_KERNEL    0x0001
+#define GFP_ATOMIC    0x0002
+#define GFP_DMA       0x0004
+#define GFP_HIGHMEM   0x0008
+#define GFP_USER      0x0010
+#define GFP_NOWAIT    GFP_ATOMIC
+#define GFP_NOIO      0x0020
+#define GFP_NOFS      0x0040
+
+typedef unsigned int gfp_t;
+
+/* SLUB configuration */
+#define SLUB_MIN_OBJECTS    4
+#define SLUB_MAX_ORDER      3
+#define SLUB_MIN_ORDER      0
+#define SLUB_CPU_PARTIAL    50
+#define SLUB_PAGE_SHIFT     12
+#define SLUB_PAGE_SIZE      (1 << SLUB_PAGE_SHIFT)
+
+/* Flags for kmem_cache_create */
+#define SLAB_HWCACHE_ALIGN  0x00000001
+#define SLAB_CACHE_DMA      0x00000002
+#define SLAB_PANIC          0x00000004
+#define SLAB_DESTROY_BY_RCU 0x00000008
+#define SLAB_MEM_SPREAD     0x00000010
+#define SLAB_RED_ZONE       0x00000020
+#define SLAB_POISON         0x00000040
+#define SLAB_STORE_USER     0x00000080
+#define SLAB_ACCOUNT        0x00000100
+
+/* Object poisoning patterns */
+#define POISON_FREE         0x6b
+#define POISON_ALLOC        0x5a
+#define POISON_END          0xa5
+
+/* SLUB statistics */
+enum slub_stat_items {
+    ALLOC_FASTPATH = 0,
+    ALLOC_SLOWPATH = 1,
+    FREE_FASTPATH = 2,
+    FREE_SLOWPATH = 3,
+    ALLOC_REFILL = 4,
+    ALLOC_NEW_SLAB = 5,
+    FREE_SLAB = 6,
+    CPUSLAB_FLUSH = 7,
+    NR_SLUB_STAT_ITEMS
+};
+
+/* Per-CPU slab data */
+struct kmem_cache_cpu {
+    void **freelist;             /* Free object list */
+    struct page *page;           /* Current page */
+    struct page *partial;        /* Partial page list */
+    unsigned int tid;            /* Transaction ID */
+    unsigned long stat[NR_SLUB_STAT_ITEMS];
+};
+
+/* kmem_cache structure */
+struct kmem_cache {
+    /* Per-CPU data */
+    struct kmem_cache_cpu *cpu_slab;  /* Per-CPU array */
+    
+    /* Slab management */
+    unsigned int size;           /* Object size */
+    unsigned int object_size;    /* Original object size */
+    unsigned int align;          /* Alignment */
+    unsigned int offset;         /* Free pointer offset */
+    unsigned int inuse;          /* Bytes used in object */
+    unsigned int refcount;       /* Refcount offset */
+    unsigned int red_left_pad;   /* Red zone left padding */
+    
+    /* Page allocation */
+    unsigned int order;          /* Page order (2^order pages) */
+    unsigned int min_partial;    /* Min partial slabs per CPU */
+    unsigned int cpu_partial;    /* Target partial slabs per CPU */
+    
+    /* NUMA */
+    int node;                    /* NUMA node (-1 for all) */
+    
+    /* Constructor/destructor */
+    void (*ctor)(void *obj);
+    void (*dtor)(void *obj);
+    
+    /* Debug */
+    const char *name;
+    struct list_head list;
+    
+    /* Statistics */
+    unsigned long alloc_count;
+    unsigned long free_count;
+    unsigned long alloc_fastpath;
+    unsigned long free_fastpath;
+    unsigned long alloc_slowpath;
+    unsigned long free_slowpath;
+};
+
+/* Page structure is defined in pagecache.h */
+/* struct page { ... }; */
+
+/* Generic kmalloc caches */
+extern struct kmem_cache *kmalloc_caches[13];  /* PAGE_SHIFT (12) + 1 */
+extern struct kmem_cache *kmalloc_caches_dma[13];
+
+/* Core API */
+struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align,
+                                     unsigned long flags,
+                                     void (*ctor)(void *obj));
+void kmem_cache_destroy(struct kmem_cache *s);
+
+void *kmem_cache_alloc(struct kmem_cache *s, gfp_t flags);
+void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t flags, int node);
+void kmem_cache_free(struct kmem_cache *s, void *obj);
+void kmem_cache_free_node(struct kmem_cache *s, void *obj, int node);
+
+void *kmalloc(size_t size, gfp_t flags);
+void *kmalloc_node(size_t size, gfp_t flags, int node);
+void *kzalloc(size_t size, gfp_t flags);
+void *kzalloc_node(size_t size, gfp_t flags, int node);
+void *kmalloc_array(size_t n, size_t size, gfp_t flags);
+void *kcalloc(size_t n, size_t size, gfp_t flags);
+
+void kfree(const void *obj);
+void kfree_sensitive(const void *obj, size_t size);
+
+/* Bulk operations */
+int kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags,
+                          size_t n, void **obj);
+void kmem_cache_free_bulk(struct kmem_cache *s, size_t n, void **obj);
+
+/* Cache management */
+int kmem_cache_shrink(struct kmem_cache *s);
+void kmem_cache_update_cpu_partial(struct kmem_cache *s);
+unsigned long kmem_cache_avail_objects(struct kmem_cache *s);
+
+/* Debug */
+void kmem_cache_debug_check(struct kmem_cache *s, void *obj);
+void slub_debug_init(void);
+void slub_dump_cache(struct kmem_cache *s);
+
+/* System initialization */
+void slub_init(void);
+void slub_early_init(void);
+
+/* Memory hotplug (stub) */
+struct notifier_block;
+int slub_memory_notifier(struct notifier_block *nb, unsigned long action, void *data);
+
+/* SMP helpers */
+#define for_each_possible_cpu(cpu) for (int cpu = 0; cpu < num_possible_cpus(); cpu++)
+
+#endif /* _FELINOS_SLUB_H */

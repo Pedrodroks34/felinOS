@@ -19,7 +19,8 @@ UFLAGS = -std=gnu11 -O2 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -f
 
 C_SOURCES = $(wildcard kernel/*.c) $(wildcard kernel/lib/*.c) \
             $(wildcard kernel/drivers/*.c) $(wildcard kernel/fs/*.c) \
-            $(wildcard kernel/sh/*.c) $(wildcard kernel/net/*.c)
+            $(wildcard kernel/sh/*.c) $(wildcard kernel/net/*.c) \
+            $(wildcard kernel/mm/*.c)
 ASM_SOURCES = boot/boot.s kernel/isr.s kernel/gdt_flush.s kernel/user_asm.s kernel/sched_asm.s \
               kernel/fork_asm.s kernel/ap_trampoline.s kernel/progs.s
 

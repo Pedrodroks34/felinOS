@@ -1,0 +1,235 @@
+# FelinOS syscall number definitions
+# Based on kernel/syscall.h from FelinOS kernel
+# This patch adds FelinOS syscall numbers to musl's syscall.h
+
+--- a/arch/x86_64/bits/syscall.h.in
++++ b/arch/x86_64/bits/syscall.h.in
+@@ -1,5 +1,7 @@
+ #ifndef _SYS_SYSCALL_H
+ #define _SYS_SYSCALL_H
+ 
++#define __FELINOS_SYSCALL_BASE 0
++
+ /* Linux syscall numbers (kept for reference) */
+ #define __NR_read 0
+ #define __NR_write 1
+@@ -200,6 +202,150 @@
+ #define __NR_pkey_mprotect 329
+ #define __NR_pkey_free 330
+ 
++/* ===== FelinOS/Gato syscall numbers ===== */
++/* ABI: rax=number, rdi/rsi/rdx/rcx/r8/r9=args (64-bit) */
++/*      ebx/ecx/edx/esi/edi/ebp=args (32-bit compat) */
++
++#define __NR_felinOS_exit           0
++#define __NR_felinOS_write          1
++#define __NR_felinOS_read           2
++#define __NR_felinOS_open           3
++#define __NR_felinOS_close          4
++#define __NR_felinOS_getpid         5
++#define __NR_felinOS_getppid        6
++#define __NR_felinOS_uptime         7
++#define __NR_felinOS_sleep          8
++#define __NR_felinOS_yield          9
++#define __NR_felinOS_spawn          10
++#define __NR_felinOS_wait           11
++#define __NR_felinOS_kill           12
++#define __NR_felinOS_lseek          13
++#define __NR_felinOS_stat           14
++#define __NR_felinOS_readdir        15
++#define __NR_felinOS_mkdir          16
++#define __NR_felinOS_unlink         17
++#define __NR_felinOS_rename         18
++#define __NR_felinOS_chdir          19
++#define __NR_felinOS_getcwd         20
++#define __NR_felinOS_dup            21
++#define __NR_felinOS_dup2           22
++#define __NR_felinOS_pipe           23
++#define __NR_felinOS_fork           24
++#define __NR_felinOS_execve         25
++#define __NR_felinOS_sigaction      26
++#define __NR_felinOS_sigreturn      27
++#define __NR_felinOS_sigprocmask    28
++#define __NR_felinOS_socket         29
++#define __NR_felinOS_bind           30
++#define __NR_felinOS_connect        31
++#define __NR_felinOS_listen         32
++#define __NR_felinOS_accept         33
++#define __NR_felinOS_send           34
++#define __NR_felinOS_recv           35
++#define __NR_felinOS_sendto         36
++#define __NR_felinOS_recvfrom       37
++#define __NR_felinOS_getsockname    38
++#define __NR_felinOS_setsockopt     39
++#define __NR_felinOS_gethostbyname  40
++#define __NR_felinOS_getifaddr      41
++#define __NR_felinOS_getifaddrs     42
++#define __NR_felinOS_mmap           43
++#define __NR_felinOS_munmap         44
++#define __NR_felinOS_mprotect       45
++#define __NR_felinOS_madvise        46
++#define __NR_felinOS_msync          47
++#define __NR_felinOS_clock_gettime  48
++#define __NR_felinOS_clock_settime  49
++#define __NR_felinOS_settimeofday   50
++#define __NR_felinOS_times          51
++#define __NR_felinOS_getrusage      52
++#define __NR_felinOS_getrlimit      53
++#define __NR_felinOS_setrlimit      54
++#define __NR_felinOS_truncate       55
++#define __NR_felinOS_ftruncate      56
++#define __NR_felinOS_rmdir          57
++#define __NR_felinOS_sbrk           58
++#define __NR_felinOS_getuid         59
++#define __NR_felinOS_geteuid        60
++#define __NR_felinOS_getgid         61
++#define __NR_felinOS_getegid        62
++#define __NR_felinOS_setuid         63
++#define __NR_felinOS_setgid         64
++#define __NR_felinOS_setreuid       65
++#define __NR_felinOS_setregid       66
++#define __NR_felinOS_getresuid      67
++#define __NR_felinOS_getresgid      68
++#define __NR_felinOS_setresuid      69
++#define __NR_felinOS_setresgid      70
++#define __NR_felinOS_uname          71
++#define __NR_felinOS_fstat          72
++#define __NR_felinOS_fcntl          73
++#define __NR_felinOS_ioctl          74
++#define __NR_felinOS_access         75
++#define __NR_felinOS_chmod          76
++#define __NR_felinOS_chown          77
++#define __NR_felinOS_utime          78
++#define __NR_felinOS_link           79
++#define __NR_felinOS_symlink        80
++#define __NR_felinOS_readlink       81
++#define __NR_felinOS_mknod          82
++#define __NR_felinOS_ustat          83
++#define __NR_felinOS_statfs         84
++#define __NR_felinOS_fstatfs        85
++#define __NR_felinOS_sync           86
++#define __NR_felinOS_getdents       87
++#define __NR_felinOS_getdents64     88
++
++/* FelinOS-specific syscalls */
++#define __NR_felinOS_vmm_op         100
++#define __NR_felinOS_pmm_op         101
++#define __NR_felinOS_sched_op       102
++
+ #endif
+ 
+--- a/arch/x86_64/bits/syscall.h
++++ b/arch/x86_64/bits/syscall.h
+@@ -1,5 +1,7 @@
+ #ifndef _SYS_SYSCALL_H
+ #define _SYS_SYSCALL_H
+ 
++#define __FELINOS_SYSCALL_BASE 0
++
+ /* Linux syscall numbers (kept for reference) */
+ #define __NR_read 0
+ #define __NR_write 1
+@@ -200,6 +202,150 @@
+ #define __NR_pkey_mprotect 329
+ #define __NR_pkey_free 330
+ 
++/* ===== FelinOS/Gato syscall numbers ===== */
++/* ABI: rax=number, rdi/rsi/rdx/rcx/r8/r9=args (64-bit) */
++/*      ebx/ecx/edx/esi/edi/ebp=args (32-bit compat) */
++
++#define __NR_felinOS_exit           0
++#define __NR_felinOS_write          1
++#define __NR_felinOS_read           2
++#define __NR_felinOS_open           3
++#define __NR_felinOS_close          4
++#define __NR_felinOS_getpid         5
++#define __NR_felinOS_getppid        6
++#define __NR_felinOS_uptime         7
++#define __NR_felinOS_sleep          8
++#define __NR_felinOS_yield          9
++#define __NR_felinOS_spawn          10
++#define __NR_felinOS_wait           11
++#define __NR_felinOS_kill           12
++#define __NR_felinOS_lseek          13
++#define __NR_felinOS_stat           14
++#define __NR_felinOS_readdir        15
++#define __NR_felinOS_mkdir          16
++#define __NR_felinOS_unlink         17
++#define __NR_felinOS_rename         18
++#define __NR_felinOS_chdir          19
++#define __NR_felinOS_getcwd         20
++#define __NR_felinOS_dup            21
++#define __NR_felinOS_dup2           22
++#define __NR_felinOS_pipe           23
++#define __NR_felinOS_fork           24
++#define __NR_felinOS_execve         25
++#define __NR_felinOS_sigaction      26
++#define __NR_felinOS_sigreturn      27
++#define __NR_felinOS_sigprocmask    28
++#define __NR_felinOS_socket         29
++#define __NR_felinOS_bind           30
++#define __NR_felinOS_connect        31
++#define __NR_felinOS_listen         32
++#define __NR_felinOS_accept         33
++#define __NR_felinOS_send           34
++#define __NR_felinOS_recv           35
++#define __NR_felinOS_sendto         36
++#define __NR_felinOS_recvfrom       37
++#define __NR_felinOS_getsockname    38
++#define __NR_felinOS_setsockopt     39
++#define __NR_felinOS_gethostbyname  40
++#define __NR_felinOS_getifaddr      41
++#define __NR_felinOS_getifaddrs     42
++#define __NR_felinOS_mmap           43
++#define __NR_felinOS_munmap         44
++#define __NR_felinOS_mprotect       45
++#define __NR_felinOS_madvise        46
++#define __NR_felinOS_msync          47
++#define __NR_felinOS_clock_gettime  48
++#define __NR_felinOS_clock_settime  49
++#define __NR_felinOS_settimeofday   50
++#define __NR_felinOS_times          51
++#define __NR_felinOS_getrusage      52
++#define __NR_felinOS_getrlimit      53
++#define __NR_felinOS_setrlimit      54
++#define __NR_felinOS_truncate       55
++#define __NR_felinOS_ftruncate      56
++#define __NR_felinOS_rmdir          57
++#define __NR_felinOS_sbrk           58
++#define __NR_felinOS_getuid         59
++#define __NR_felinOS_geteuid        60
++#define __NR_felinOS_getgid         61
++#define __NR_felinOS_getegid        62
++#define __NR_felinOS_setuid         63
++#define __NR_felinOS_setgid         64
++#define __NR_felinOS_setreuid       65
++#define __NR_felinOS_setregid       66
++#define __NR_felinOS_getresuid      67
++#define __NR_felinOS_getresgid      68
++#define __NR_felinOS_setresuid      69
++#define __NR_felinOS_setresgid      70
++#define __NR_felinOS_uname          71
++#define __NR_felinOS_fstat          72
++#define __NR_felinOS_fcntl          73
++#define __NR_felinOS_ioctl          74
++#define __NR_felinOS_access         75
++#define __NR_felinOS_chmod          76
++#define __NR_felinOS_chown          77
++#define __NR_felinOS_utime          78
++#define __NR_felinOS_link           79
++#define __NR_felinOS_symlink        80
++#define __NR_felinOS_readlink       81
++#define __NR_felinOS_mknod          82
++#define __NR_felinOS_ustat          83
++#define __NR_felinOS_statfs         84
++#define __NR_felinOS_fstatfs        85
++#define __NR_felinOS_sync           86
++#define __NR_felinOS_getdents       87
++#define __NR_felinOS_getdents64     88
++
++/* FelinOS-specific syscalls */
++#define __NR_felinOS_vmm_op         100
++#define __NR_felinOS_pmm_op         101
++#define __NR_felinOS_sched_op       102
++
+ #endif

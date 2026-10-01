@@ -1,0 +1,403 @@
+/*
+ * FelinOS Kernel - XArray / Radix Tree Implementation
+ * ====================================================
+ * Used for page cache (address_space->i_pages)
+ * Based on Linux kernel lib/xarray.c
+ */
+
+#include "pagecache.h"
+#include "lib/string.h"
+#include "lib/heap.h"
+#include "sync.h"
+
+/* XArray node allocation */
+static struct kmem_cache *xa_node_cache;
+
+/* Initialize XArray */
+void xa_init(struct xarray *xa) {
+    xa->xa_head = NULL;
+    xa->xa_flags = 0;
+    spinlock_init(&xa->xa_lock);
+}
+
+/* Destroy XArray */
+void xa_destroy(struct xarray *xa) {
+    if (xa->xa_head) {
+        /* TODO: recursively free nodes */
+        kfree(xa->xa_head);
+        xa->xa_head = NULL;
+    }
+}
+
+/* Allocate a new XArray node */
+static struct xa_node *xa_node_alloc(gfp_t gfp) {
+    struct xa_node *node = kmem_cache_alloc(xa_node_cache, gfp);
+    if (node) {
+        memset(node, 0, sizeof(*node));
+    }
+    return node;
+}
+
+/* Free an XArray node */
+static void xa_node_free(struct xa_node *node) {
+    kmem_cache_free(xa_node_cache, node);
+}
+
+/* Find or allocate node at given index */
+static struct xa_node **xa_find_or_alloc_node(struct xarray *xa, unsigned long index,
+                                               struct xa_node **parent, gfp_t gfp) {
+    struct xa_node **slot = &xa->xa_head;
+    struct xa_node *node = xa->xa_head;
+    unsigned long shift = 0;
+    
+    /* Calculate required depth */
+    unsigned long max_index = index;
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    *parent = NULL;
+    
+    while (shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        
+        if (!*slot) {
+            struct xa_node *new_node = xa_node_alloc(gfp);
+            if (!new_node) return NULL;
+            
+            new_node->shift = shift;
+            new_node->offset = offset;
+            new_node->parent = *parent;
+            *slot = new_node;
+        }
+        
+        node = *slot;
+        *parent = node;
+        slot = &node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    return slot;
+}
+
+/* Store value in XArray */
+void *xa_store(struct xarray *xa, unsigned long index, void *entry, gfp_t gfp) {
+    struct xa_node *parent = NULL;
+    struct xa_node **slot;
+    void *old;
+    
+    spin_lock(&xa->xa_lock);
+    
+    slot = xa_find_or_alloc_node(xa, index, &parent, gfp);
+    if (!slot) {
+        spin_unlock(&xa->xa_lock);
+        return ERR_PTR(-ENOMEM);
+    }
+    
+    old = *slot;
+    *slot = entry;
+    
+    /* Update counts */
+    if (entry && !old) {
+        struct xa_node *node = parent;
+        while (node) {
+            node->count++;
+            if (!xa_is_value(entry)) node->nr_values++;
+            node = node->parent;
+        }
+    } else if (!entry && old) {
+        struct xa_node *node = parent;
+        while (node) {
+            node->count--;
+            if (!xa_is_value(old)) node->nr_values--;
+            node = node->parent;
+        }
+    }
+    
+    spin_unlock(&xa->xa_lock);
+    return old;
+}
+
+/* Load value from XArray */
+void *xa_load(struct xarray *xa, unsigned long index) {
+    struct xa_node *node = xa->xa_head;
+    unsigned long shift = 0;
+    
+    /* Calculate depth */
+    unsigned long max_index = index;
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    spin_lock(&xa->xa_lock);
+    
+    while (node && shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        node = node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    void *entry = node ? node->slots[index & XA_CHUNK_MASK] : NULL;
+    
+    spin_unlock(&xa->xa_lock);
+    return entry;
+}
+
+/* Erase entry from XArray */
+void *xa_erase(struct xarray *xa, unsigned long index) {
+    struct xa_node *parent = NULL;
+    struct xa_node **slot;
+    void *old;
+    
+    spin_lock(&xa->xa_lock);
+    
+    slot = xa_find_or_alloc_node(xa, index, &parent, GFP_NOWAIT);
+    if (!slot) {
+        spin_unlock(&xa->xa_lock);
+        return NULL;
+    }
+    
+    old = *slot;
+    if (!old) {
+        spin_unlock(&xa->xa_lock);
+        return NULL;
+    }
+    
+    *slot = NULL;
+    
+    /* Update counts and cleanup empty nodes */
+    struct xa_node *node = parent;
+    while (node) {
+        node->count--;
+        if (!xa_is_value(old)) node->nr_values--;
+        
+        if (node->count == 0 && node != xa->xa_head) {
+            struct xa_node *parent_node = node->parent;
+            unsigned long offset = node->offset;
+            parent_node->slots[offset] = NULL;
+            xa_node_free(node);
+            node = parent_node;
+        } else {
+            break;
+        }
+    }
+    
+    /* Check if root became empty */
+    if (xa->xa_head && xa->xa_head->count == 0) {
+        xa_node_free(xa->xa_head);
+        xa->xa_head = NULL;
+    }
+    
+    spin_unlock(&xa->xa_lock);
+    return old;
+}
+
+/* Check if entry is a value (not a node) */
+bool xa_is_value(void *entry) {
+    return (uintptr_t)entry & 1;
+}
+
+/* Tag operations */
+void xa_tag_set(struct xarray *xa, unsigned long index, unsigned int tag) {
+    struct xa_node *node = xa->xa_head;
+    unsigned long shift = 0;
+    unsigned long max_index = index;
+    
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    spin_lock(&xa->xa_lock);
+    
+    while (node && shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        node->marks[tag] |= 1UL << offset;
+        node = node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    if (node) {
+        node->marks[tag] |= 1UL << (index & XA_CHUNK_MASK);
+    }
+    
+    spin_unlock(&xa->xa_lock);
+}
+
+void xa_tag_clear(struct xarray *xa, unsigned long index, unsigned int tag) {
+    struct xa_node *node = xa->xa_head;
+    unsigned long shift = 0;
+    unsigned long max_index = index;
+    
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    spin_lock(&xa->xa_lock);
+    
+    while (node && shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        if (!(node->slots[offset] && (node->marks[tag] & (1UL << offset)))) {
+            node->marks[tag] &= ~(1UL << offset);
+        }
+        node = node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    if (node) {
+        node->marks[tag] &= ~(1UL << (index & XA_CHUNK_MASK));
+    }
+    
+    spin_unlock(&xa->xa_lock);
+}
+
+bool xa_tag_get(struct xarray *xa, unsigned long index, unsigned int tag) {
+    struct xa_node *node = xa->xa_head;
+    unsigned long shift = 0;
+    unsigned long max_index = index;
+    
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    spin_lock(&xa->xa_lock);
+    
+    while (node && shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        node = node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    bool ret = false;
+    if (node) {
+        ret = (node->marks[tag] >> (index & XA_CHUNK_MASK)) & 1;
+    }
+    
+    spin_unlock(&xa->xa_lock);
+    return ret;
+}
+
+/* Find next tagged entry */
+unsigned long xa_find_next_tagged(struct xarray *xa, unsigned long *indexp,
+                                   unsigned int tag) {
+    unsigned long index = *indexp;
+    struct xa_node *node = xa->xa_head;
+    
+    if (!node) return ULONG_MAX;
+    
+    spin_lock(&xa->xa_lock);
+    
+    unsigned long shift = 0;
+    unsigned long max_index = index;
+    while (max_index > XA_CHUNK_MASK) {
+        max_index >>= XA_CHUNK_SHIFT;
+        shift += XA_CHUNK_SHIFT;
+    }
+    
+    while (node && shift > 0) {
+        unsigned long offset = (index >> shift) & XA_CHUNK_MASK;
+        unsigned long marks = node->marks[tag] >> offset;
+        
+        if (!marks) {
+            /* No tagged entries at this level, go up */
+            shift += XA_CHUNK_SHIFT;
+            index = ((index >> shift) + 1) << shift;
+            node = node->parent;
+            continue;
+        }
+        
+        unsigned long bit = __builtin_ctzl(marks);
+        offset += bit;
+        index = (index & ~((1UL << shift) - 1)) | (offset << shift);
+        node = node->slots[offset];
+        shift -= XA_CHUNK_SHIFT;
+    }
+    
+    if (node) {
+        unsigned long offset = index & XA_CHUNK_MASK;
+        unsigned long marks = node->marks[tag] >> offset;
+        
+        if (marks) {
+            unsigned long bit = __builtin_ctzl(marks);
+            index = (index & ~XA_CHUNK_MASK) | (offset + bit);
+        } else {
+            index = (index & ~XA_CHUNK_MASK) + XA_CHUNK_SIZE;
+        }
+    }
+    
+    spin_unlock(&xa->xa_lock);
+    *indexp = index;
+    return index;
+}
+
+/* Iterator for XArray */
+struct xa_state {
+    struct xarray *xa;
+    struct xa_node *node;
+    unsigned long index;
+    unsigned long shift;
+    unsigned long offset;
+};
+
+void xa_state_init(struct xa_state *xas, struct xarray *xa, unsigned long index) {
+    xas->xa = xa;
+    xas->index = index;
+    xas->node = NULL;
+    xas->shift = 0;
+    xas->offset = 0;
+}
+
+void *xa_state_load(struct xa_state *xas) {
+    return xa_load(xas->xa, xas->index);
+}
+
+void *xa_state_store(struct xa_state *xas, void *entry) {
+    void *old = xa_store(xas->xa, xas->index, entry, GFP_KERNEL);
+    return old;
+}
+
+void xa_state_erase(struct xa_state *xas) {
+    xa_erase(xas->xa, xas->index);
+}
+
+/* Initialize XArray subsystem */
+void xarray_init(void) {
+    xa_node_cache = kmem_cache_create("xa_node", sizeof(struct xa_node), 0,
+                                      SLAB_HWCACHE_ALIGN | SLAB_ACCOUNT, NULL);
+    kprintf("XArray: initialized\n");
+}
+
+/* XArray for page cache (address_space->i_pages) */
+void xarray_store_page(struct xarray *xa, pgoff_t index, struct page *page) {
+    xa_store(xa, index, page, GFP_KERNEL);
+}
+
+struct page *xarray_load_page(struct xarray *xa, pgoff_t index) {
+    return xa_load(xa, index);
+}
+
+void xarray_erase_page(struct xarray *xa, pgoff_t index) {
+    xa_erase(xa, index);
+}
+
+/* Tag pages for writeback/dirty */
+void pagecache_tag_page(struct address_space *mapping, struct page *page, int tag) {
+    xa_tag_set(&mapping->i_pages, page->index, tag);
+}
+
+void pagecache_clear_tag(struct address_space *mapping, struct page *page, int tag) {
+    xa_tag_clear(&mapping->i_pages, page->index, tag);
+}
+
+bool pagecache_test_tag(struct address_space *mapping, struct page *page, int tag) {
+    return xa_tag_get(&mapping->i_pages, page->index, tag);
+}
+
+/* Find next tagged page */
+pgoff_t pagecache_find_tagged(struct address_space *mapping, pgoff_t *index, int tag) {
+    return xa_find_next_tagged(&mapping->i_pages, index, tag);
+}

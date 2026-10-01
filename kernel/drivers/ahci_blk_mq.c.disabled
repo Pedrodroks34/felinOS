@@ -1,0 +1,300 @@
+/*
+ * FelinOS Kernel - AHCI blk-mq Integration
+ * ========================================
+ * Connects AHCI driver to blk-mq multi-queue block layer
+ */
+
+#include "block/blk-mq.h"
+#include "drivers/ahci.h"
+#include "drivers/pci.h"
+#include "lib/string.h"
+#include "lib/heap.h"
+#include "console.h"
+#include "sync.h"
+#include "sched.h"
+
+/* AHCI blk-mq hardware context */
+struct ahci_mq_hctx {
+    struct blk_mq_hw_ctx *hctx;
+    struct ahci_device *dev;
+    volatile uint32_t *port_base;
+    int port_num;
+    struct ahci_cmd_header *cmd_headers;
+    struct ahci_cmd_table *cmd_tables;
+    struct ahci_fis *fis_area;
+    spinlock_t lock;
+    struct list_head pending;
+    int depth;
+};
+
+/* AHCI blk-mq tag set */
+static struct blk_mq_tag_set ahci_tag_set;
+static struct request_queue *ahci_queue[8];  /* Max 8 ports */
+
+/* Forward declarations */
+static blk_status_t ahci_mq_queue_rq(struct blk_mq_hw_ctx *hctx, struct request *rq);
+static int ahci_mq_init_hctx(struct blk_mq_hw_ctx *hctx, void *driver_data, unsigned int hctx_idx);
+static void ahci_mq_exit_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx);
+static int ahci_mq_init_request(struct blk_mq_tag_set *set, struct request *rq, 
+                                 unsigned int hctx_idx, unsigned int tag);
+static void ahci_mq_exit_request(struct blk_mq_tag_set *set, struct request *rq,
+                                  unsigned int hctx_idx, unsigned int tag);
+static void ahci_mq_complete_rq(struct ahci_mq_hctx *mq_hctx, int slot, blk_status_t status);
+static void ahci_irq_handler_mq(struct regs *r);
+
+/* AHCI blk-mq operations */
+static const struct blk_mq_ops ahci_mq_ops = {
+    .queue_rq = ahci_mq_queue_rq,
+    .init_hctx = ahci_mq_init_hctx,
+    .exit_hctx = ahci_mq_exit_hctx,
+    .init_request = ahci_mq_init_request,
+    .exit_request = ahci_mq_exit_request,
+};
+
+/* Initialize AHCI blk-mq for a device */
+int ahci_blk_mq_init(struct ahci_device *dev) {
+    if (!dev || !dev->present) return -ENODEV;
+    
+    struct ahci_mq_hctx *mq_hctx = kzalloc(sizeof(*mq_hctx), GFP_KERNEL);
+    if (!mq_hctx) return -ENOMEM;
+    
+    mq_hctx->dev = dev;
+    mq_hctx->port_num = dev->port_num;
+    mq_hctx->port_base = (volatile uint32_t *)((uintptr_t)hba + 0x100 + dev->port_num * 0x80);
+    mq_hctx->cmd_headers = cmd_headers[dev->port_num];
+    mq_hctx->cmd_tables = cmd_tables[dev->port_num];
+    mq_hctx->fis_area = fis_areas[dev->port_num];
+    mq_hctx->depth = AHCI_MAX_CMDS;
+    spinlock_init(&mq_hctx->lock);
+    INIT_LIST_HEAD(&mq_hctx->pending);
+    
+    /* Configure tag set */
+    memset(&ahci_tag_set, 0, sizeof(ahci_tag_set));
+    ahci_tag_set.ops = &ahci_mq_ops;
+    ahci_tag_set.nr_hw_queues = 1;
+    ahci_tag_set.queue_depth = AHCI_MAX_CMDS;
+    ahci_tag_set.cmd_size = sizeof(struct ahci_mq_hctx *);
+    ahci_tag_set.flags = BLK_MQ_F_TAG_QUEUE_SHARED;
+    ahci_tag_set.driver_data = mq_hctx;
+    
+    /* Initialize tag set */
+    if (blk_mq_alloc_tag_set(&ahci_tag_set)) {
+        kfree(mq_hctx);
+        return -ENOMEM;
+    }
+    
+    /* Initialize request queue */
+    struct request_queue *q = blk_mq_init_queue(&ahci_tag_set);
+    if (!q) {
+        blk_mq_free_tag_set(&ahci_tag_set);
+        kfree(mq_hctx);
+        return -ENOMEM;
+    }
+    
+    q->queuedata = dev;
+    ahci_queue[dev->port_num] = q;
+    
+    /* Create genhd */
+    struct gendisk *disk = alloc_disk(16);
+    if (!disk) {
+        blk_cleanup_queue(q);
+        blk_mq_free_tag_set(&ahci_tag_set);
+        kfree(mq_hctx);
+        return -ENOMEM;
+    }
+    
+    snprintf(disk->disk_name, sizeof(disk->disk_name), "sd%c", 'a' + dev->port_num);
+    disk->queue = q;
+    disk->major = 0;  /* Auto assign */
+    disk->first_minor = dev->port_num * 16;
+    disk->minors = 16;
+    disk->flags = GENHD_FL_EXT_DEVT;
+    set_capacity(disk, dev->sectors);
+    
+    add_disk(disk);
+    dev->disk = disk;
+    
+    kprintf("blk-mq: AHCI port %d registered as %s (%lu sectors)\n",
+            dev->port_num, disk->disk_name, dev->sectors);
+    
+    return 0;
+}
+
+/* AHCI blk-mq queue request */
+static blk_status_t ahci_mq_queue_rq(struct blk_mq_hw_ctx *hctx, struct request *rq) {
+    struct ahci_mq_hctx *mq_hctx = hctx->queue->queuedata;
+    if (!mq_hctx) return BLK_STS_IOERR;
+    
+    struct bio *bio = rq->bio;
+    if (!bio) return BLK_STS_IOERR;
+    
+    /* Find free command slot */
+    int slot = ahci_port_find_cmd_slot(mq_hctx->port_base);
+    if (slot < 0) return BLK_STS_RESOURCE;
+    
+    struct ahci_cmd_header *header = &mq_hctx->cmd_headers[slot];
+    struct ahci_cmd_table *table = &mq_hctx->cmd_tables[slot];
+    
+    memset(table, 0, sizeof(*table));
+    uint8_t *fis = table->cfis;
+    
+    sector_t sector = blk_rq_pos(rq);
+    unsigned int count = blk_rq_sectors(rq);
+    int write = rq_data_dir(rq);
+    
+    /* Build FIS */
+    fis[0] = AHCI_FIS_TYPE_REG_H2D;
+    fis[1] = 0x80;
+    fis[2] = write ? 0x35 : 0x25;
+    fis[3] = 0;
+    
+    fis[4] = (uint8_t)(sector & 0xFF);
+    fis[5] = (uint8_t)((sector >> 8) & 0xFF);
+    fis[6] = (uint8_t)((sector >> 16) & 0xFF);
+    fis[7] = 0x40;
+    fis[8] = (uint8_t)((sector >> 24) & 0xFF);
+    fis[9] = (uint8_t)((sector >> 32) & 0xFF);
+    fis[10] = (uint8_t)((sector >> 40) & 0xFF);
+    fis[11] = 0;
+    
+    fis[12] = (uint8_t)(count & 0xFF);
+    fis[13] = (uint8_t)((count >> 8) & 0xFF);
+    fis[14] = 0;
+    fis[15] = 0;
+    
+    header->flags = (write ? AHCI_CMD_HEADER_W : 0) | AHCI_CMD_HEADER_C;
+    header->prdtl = 1;
+    header->prdbc = 0;
+    
+    /* Setup PRDT for bio data */
+    struct bio_vec *bv = bio->bi_io_vec + bio->bi_iter.bi_idx;
+    uint64_t buf_phys = (uint64_t)(uintptr_t)page_address(bv->bv_page) + bv->bv_offset;
+    table->prdt[0].dba = (uint32_t)buf_phys;
+    table->prdt[0].dbau = (uint32_t)(buf_phys >> 32);
+    table->prdt[0].dbc = (bv->bv_len - 1);
+    
+    /* Store request for completion */
+    rq->driver_data = mq_hctx;
+    rq->tag = slot;
+    
+    /* Submit command */
+    spin_lock(&mq_hctx->lock);
+    mq_hctx->port_base[AHCI_PORT_CI / 4] = (1u << slot);
+    list_add_tail(&rq->queuelist, &mq_hctx->pending);
+    spin_unlock(&mq_hctx->lock);
+    
+    return BLK_STS_OK;
+}
+
+/* AHCI blk-mq init hardware context */
+static int ahci_mq_init_hctx(struct blk_mq_hw_ctx *hctx, void *driver_data, unsigned int hctx_idx) {
+    struct ahci_mq_hctx *mq_hctx = driver_data;
+    if (!mq_hctx) return -EINVAL;
+    
+    mq_hctx->hctx = hctx;
+    hctx->driver_data = mq_hctx;
+    
+    return 0;
+}
+
+/* AHCI blk-mq exit hardware context */
+static void ahci_mq_exit_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx) {
+    struct ahci_mq_hctx *mq_hctx = hctx->driver_data;
+    if (mq_hctx) {
+        mq_hctx->hctx = NULL;
+    }
+}
+
+/* AHCI blk-mq init request */
+static int ahci_mq_init_request(struct blk_mq_tag_set *set, struct request *rq,
+                                 unsigned int hctx_idx, unsigned int tag) {
+    return 0;
+}
+
+/* AHCI blk-mq exit request */
+static void ahci_mq_exit_request(struct blk_mq_tag_set *set, struct request *rq,
+                                  unsigned int hctx_idx, unsigned int tag) {
+}
+
+/* AHCI interrupt handler for blk-mq */
+static void ahci_irq_handler_mq(struct regs *r) {
+    if (!hba) return;
+    uint32_t is = hba->is;
+    hba->is = is;
+    
+    for (int p = 0; p < AHCI_MAX_PORTS; p++) {
+        if (is & (1u << p)) {
+            if (!ahci_queue[p]) continue;
+            
+            struct ahci_mq_hctx *mq_hctx = ahci_queue[p]->queuedata;
+            if (!mq_hctx) continue;
+            
+            volatile uint32_t *port_base = mq_hctx->port_base;
+            uint32_t port_is = port_base[AHCI_PORT_IS / 4];
+            port_base[AHCI_PORT_IS / 4] = port_is;
+            
+            if (port_is & AHCI_IS_DHRS) {
+                /* Command completed */
+                uint32_t ci = port_base[AHCI_PORT_CI / 4];
+                
+                spin_lock(&mq_hctx->lock);
+                struct request *rq, *tmp;
+                list_for_each_entry_safe(rq, tmp, &mq_hctx->pending, queuelist) {
+                    if (!(ci & (1u << rq->tag))) {
+                        /* This request completed */
+                        list_del(&rq->queuelist);
+                        
+                        blk_status_t status = BLK_STS_OK;
+                        uint32_t tfd = port_base[AHCI_PORT_TFD / 4];
+                        if (tfd & (AHCI_TFD_STS_ERR | AHCI_TFD_STS_BSY | AHCI_TFD_STS_DRQ)) {
+                            status = BLK_STS_IOERR;
+                        }
+                        
+                        /* Check port interrupt status for errors */
+                        if (port_is & (AHCI_IS_TFES | AHCI_IS_HBFS | AHCI_IS_HBDS | AHCI_IS_IFS | AHCI_IS_OFS)) {
+                            status = BLK_STS_IOERR;
+                        }
+                        
+                        blk_mq_complete_request(rq);
+                    }
+                }
+                spin_unlock(&mq_hctx->lock);
+            }
+        }
+    }
+}
+
+/* Initialize AHCI blk-mq for all devices */
+void ahci_blk_mq_init_all(void) {
+    for (int i = 0; i < ahci_dev_count; i++) {
+        struct ahci_device *dev = &ahci_devices[i];
+        if (dev->present) {
+            ahci_blk_mq_init(dev);
+        }
+    }
+    
+    /* Replace IRQ handler with blk-mq version */
+    if (ahci_dev_count > 0) {
+        irq_install_handler(ahci_irq, ahci_irq_handler_mq);
+    }
+}
+
+/* Cleanup AHCI blk-mq */
+void ahci_blk_mq_cleanup(void) {
+    for (int i = 0; i < 8; i++) {
+        if (ahci_queue[i]) {
+            struct request_queue *q = ahci_queue[i];
+            struct gendisk *disk = q->queuedata ? ((struct ahci_device *)q->queuedata)->disk : NULL;
+            
+            if (disk) {
+                del_gendisk(disk);
+                put_disk(disk);
+            }
+            
+            blk_cleanup_queue(q);
+            ahci_queue[i] = NULL;
+        }
+    }
+    
+    blk_mq_free_tag_set(&ahci_tag_set);
+}
