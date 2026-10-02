@@ -1,6 +1,46 @@
 # FelinOS Ports Configuration
 # ===========================
 # Configuração global para cross-compilação e build de ports
+#
+# Apenas variáveis e helpers aqui -- os targets (toolchain, base, clean,
+# sysroot-prepare, etc.) ficam só no Makefile. Antes este arquivo também os
+# definia, duplicados quase ao pé da letra do Makefile; como o Makefile faz
+# `include config.mk` e DEPOIS redefine os mesmos nomes de target, o make
+# sempre ficava com a versão do Makefile e descartava esta em silêncio (dá
+# pra ver isso com `make -n`: "warning: overriding recipe for target ...").
+# Então as duas cópias nunca estavam de fato ambas em uso, só uma delas por
+# vez dependendo da ordem -- e a cópia descartada aqui ainda referenciava
+# $(TOOLCHAIN_SUBDIRS)/$(BASE_SUBDIRS)/etc., que só existem no Makefile
+# (nunca são definidos aqui), então mesmo se ela "vencesse" quebraria.
+
+# -----------------------------------------------------------------------------
+# Diretórios
+# -----------------------------------------------------------------------------
+# Precisa vir ANTES de qualquer variável abaixo que o referencie (CROSS_PREFIX,
+# TARGET_CFLAGS, ...): com `:=` o make expande o lado direito IMEDIATAMENTE,
+# na hora da atribuição, não quando a variável é usada depois. Com
+# PORTS_DIR/SYSROOT/KERNEL_DIR definidos só lá embaixo (como antes), toda
+# variável que os referenciava mais acima pegava eles vazios -- por exemplo
+# CROSS_PREFIX virava "/toolchain/bin/x86_64-felinos-" (faltando o caminho
+# do projeto na frente, um caminho absoluto a partir da raiz do sistema) em
+# vez do caminho real dentro de felinos-ports/.
+#
+# PORTS_DIR também NÃO pode vir de $(CURDIR): cada port (base/musl,
+# base/busybox, ...) faz `include ../../config.mk` a partir do SEU PRÓPRIO
+# diretório, e CURDIR é o diretório de onde o make foi invocado -- ou seja,
+# PORTS_DIR virava "felinos-ports/base/musl" em vez de "felinos-ports" (só
+# "funcionava" por coincidência quando rodado direto da raiz de
+# felinos-ports/). Em vez disso, usamos onde ESTE arquivo está de verdade:
+# MAKEFILE_LIST tem o caminho usado no `include` (ex.: "../../config.mk"),
+# então dir()+abspath() dá o diretório real de config.mk não importa de
+# qual profundidade ele foi incluído.
+PORTS_DIR       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+KERNEL_DIR      := $(PORTS_DIR)/../kernel
+SYSROOT         := $(PORTS_DIR)/../userspace
+BUILD_DIR       := $(PORTS_DIR)/build
+DIST_DIR        := $(PORTS_DIR)/dist
+PKG_DIR         := $(PORTS_DIR)/pkg
+DOWNLOAD_DIR    := $(PORTS_DIR)/downloads
 
 # -----------------------------------------------------------------------------
 # Arquitetura e Target
@@ -41,17 +81,6 @@ TARGET_CFLAGS   := -m64 -mcmodel=small -mno-red-zone -mgeneral-regs-only \
 TARGET_CXXFLAGS := $(TARGET_CFLAGS) -std=gnu++20 -fno-exceptions -fno-rtti
 
 TARGET_LDFLAGS  := -nostdlib -static -Wl,--build-id=none -Wl,-z,max-page-size=0x1000
-
-# -----------------------------------------------------------------------------
-# Diretórios
-# -----------------------------------------------------------------------------
-PORTS_DIR       := $(CURDIR)
-KERNEL_DIR      := $(PORTS_DIR)/../kernel
-SYSROOT         := $(PORTS_DIR)/../userspace
-BUILD_DIR       := $(PORTS_DIR)/build
-DIST_DIR        := $(PORTS_DIR)/dist
-PKG_DIR         := $(PORTS_DIR)/pkg
-DOWNLOAD_DIR    := $(PORTS_DIR)/downloads
 
 # -----------------------------------------------------------------------------
 # Versões dos pacotes base
@@ -105,117 +134,3 @@ define patch_port
 		fi \
 	done
 endef
-
-# -----------------------------------------------------------------------------
-# Targets padrão
-# -----------------------------------------------------------------------------
-.PHONY: all toolchain base system devel clean distclean download extract patch configure build install
-
-all: toolchain base
-
-toolchain:
-	@$(MAKE) -C toolchain
-
-base: toolchain
-	@$(MAKE) -C base/musl install
-	@$(MAKE) -C base/busybox install
-	@$(MAKE) -C base/felinos-base install
-
-system: base
-	@$(MAKE) -C system/s6 install
-
-devel: base
-	@$(MAKE) -C devel/make install
-	@$(MAKE) -C devel/pkgconf install
-	@$(MAKE) -C devel/cmake install
-	@$(MAKE) -C devel/ninja install
-	@$(MAKE) -C devel/git install
-	@$(MAKE) -C devel/openssh install
-
-# -----------------------------------------------------------------------------
-# Limpeza
-# -----------------------------------------------------------------------------
-clean:
-	@for d in $(TOOLCHAIN_SUBDIRS) $(BASE_SUBDIRS) $(SYSTEM_SUBDIRS) $(DEVEL_SUBDIRS); do \
-		if [ -f $$d/Makefile ]; then \
-			$(MAKE) -C $$d clean || true; \
-		fi; \
-	done
-	@rm -rf $(BUILD_DIR)
-
-distclean: clean
-	@for d in $(TOOLCHAIN_SUBDIRS) $(BASE_SUBDIRS) $(SYSTEM_SUBDIRS) $(DEVEL_SUBDIRS); do \
-		if [ -f $$d/Makefile ]; then \
-			$(MAKE) -C $$d distclean || true; \
-		fi; \
-	done
-	@rm -rf $(SYSROOT)/* $(DIST_DIR) $(PKG_DIR) $(DOWNLOAD_DIR)
-	@rm -rf $(PORTS_DIR)/toolchain/{bin,lib,include,share}
-
-# -----------------------------------------------------------------------------
-# Sysroot
-# -----------------------------------------------------------------------------
-sysroot-prepare:
-	@mkdir -p $(SYSROOT)/{bin,sbin,lib,lib64,usr/{bin,sbin,lib,include,share},etc/init.d,dev,proc,sys,run,tmp,var/log,root,home}
-	@ln -sf lib $(SYSROOT)/lib64 2>/dev/null || true
-	@ln -sf usr/bin $(SYSROOT)/bin 2>/dev/null || true
-	@ln -sf usr/sbin $(SYSROOT)/sbin 2>/dev/null || true
-	@ln -sf usr/lib $(SYSROOT)/lib 2>/dev/null || true
-
-sysroot-clean:
-	@rm -rf $(SYSROOT)/*
-
-# -----------------------------------------------------------------------------
-# Rootfs image generation
-# -----------------------------------------------------------------------------
-ROOTFS_IMG      := $(SYSROOT).img
-ROOTFS_SIZE     := 256M
-
-mkrootfs: base sysroot-prepare
-	@echo "  MKROOTFS  $(ROOTFS_IMG)"
-	@dd if=/dev/zero of=$(ROOTFS_IMG) bs=1 count=0 seek=$(ROOTFS_SIZE) 2>/dev/null
-	@mkfs.ext4 -F -L FELINOS_ROOT $(ROOTFS_IMG) >/dev/null 2>&1
-	@mkdir -p /tmp/felinos-rootfs-mnt
-	@sudo mount -o loop $(ROOTFS_IMG) /tmp/felinos-rootfs-mnt
-	@sudo cp -a $(SYSROOT)/* /tmp/felinos-rootfs-mnt/
-	@sudo umount /tmp/felinos-rootfs-mnt
-	@rmdir /tmp/felinos-rootfs-mnt
-	@echo "  Rootfs pronto: $(ROOTFS_IMG)"
-
-# -----------------------------------------------------------------------------
-# QEMU test
-# -----------------------------------------------------------------------------
-QEMU            := qemu-system-x86_64
-QEMU_FLAGS      := -m 256M -smp 4 -serial stdio -display none \
-                   -kernel $(KERNEL_DIR)/../gato.bin \
-                   -drive file=$(ROOTFS_IMG),format=raw,if=virtio \
-                   -netdev user,id=net0 -device virtio-net-pci,netdev=net0
-
-test-rootfs: mkrootfs
-	@$(QEMU) $(QEMU_FLAGS)
-
-# -----------------------------------------------------------------------------
-# Informação
-# -----------------------------------------------------------------------------
-info:
-	@echo "FelinOS Ports Build System"
-	@echo "=========================="
-	@echo "TARGET:        $(TARGET)"
-	@echo "ARCH:          $(ARCH)"
-	@echo "KERNEL_DIR:    $(KERNEL_DIR)"
-	@echo "SYSROOT:       $(SYSROOT)"
-	@echo "BUILD_DIR:     $(BUILD_DIR)"
-	@echo "PORTS_DIR:     $(PORTS_DIR)"
-	@echo "JOBS:          $(JOBS)"
-	@echo ""
-	@echo "Targets disponíveis:"
-	@echo "  make toolchain    - Cross-compiler + headers"
-	@echo "  make base         - musl + busybox + base layout"
-	@echo "  make system       - s6/openrc init system"
-	@echo "  make devel        - make, pkgconf, cmake, ninja, git, ssh"
-	@echo "  make full         - Tudo acima"
-	@echo "  make mkrootfs     - Gera imagem rootfs.ext4"
-	@echo "  make test-rootfs  - Boota QEMU com rootfs"
-	@echo "  make clean        - Limpa build dirs"
-	@echo "  make distclean    - Limpa tudo (inclui sysroot)"
-	@echo "  make info         - Esta informação"

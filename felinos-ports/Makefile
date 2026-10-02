@@ -70,13 +70,18 @@ distclean: clean
 		fi; \
 	done
 	@rm -rf $(SYSROOT)/* $(DIST_DIR) $(PKG_DIR) $(DOWNLOAD_DIR)
-	@rm -rf $(PORTS_DIR)/toolchain/{bin,lib,include,share}
+	@rm -rf $(PORTS_DIR)/toolchain/bin $(PORTS_DIR)/toolchain/lib \
+	        $(PORTS_DIR)/toolchain/include $(PORTS_DIR)/toolchain/share
 
 # -----------------------------------------------------------------------------
 # Sysroot
 # -----------------------------------------------------------------------------
 sysroot-prepare:
-	@mkdir -p $(SYSROOT)/{bin,sbin,lib,lib64,usr/{bin,sbin,lib,include,share},etc/init.d,dev,proc,sys,run,tmp,var/log,root,home}
+	@mkdir -p $(SYSROOT)/usr/bin $(SYSROOT)/usr/sbin $(SYSROOT)/usr/lib \
+	          $(SYSROOT)/usr/include $(SYSROOT)/usr/share \
+	          $(SYSROOT)/etc/init.d $(SYSROOT)/dev $(SYSROOT)/proc \
+	          $(SYSROOT)/sys $(SYSROOT)/run $(SYSROOT)/tmp \
+	          $(SYSROOT)/var/log $(SYSROOT)/root $(SYSROOT)/home
 	@ln -sf lib $(SYSROOT)/lib64 2>/dev/null || true
 	@ln -sf usr/bin $(SYSROOT)/bin 2>/dev/null || true
 	@ln -sf usr/sbin $(SYSROOT)/sbin 2>/dev/null || true
