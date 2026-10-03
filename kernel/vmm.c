@@ -6,6 +6,7 @@
 #include "lib/format.h"
 #include "lib/string.h"
 #include "sync.h"
+#include "fs/vfs.h"
 
 #define VMM_RECLAIM_BATCH 64u
 #define VMM_HEAP_RESERVE  (8u * 1024u * 1024u)
@@ -276,6 +277,25 @@ static uint32_t vmm_evict_range_l(uint32_t base, uint32_t size, uint32_t pages) 
     return done;
 }
 
+static void flush_vm_file_region(struct vm_region *region) {
+    if (!(region->flags & VM_FILE) || !region->file ||
+        !(region->flags & (VM_WRITE | VM_SHARED))) {
+        return;
+    }
+    struct vfs_file *f = (struct vfs_file *)region->file;
+    for (uint32_t off = 0; off < region->size; off += PAGE_SIZE) {
+        uint32_t addr = region->base + off;
+        uint32_t entry = paging_get_entry(addr);
+        if (!(entry & PAGE_PRESENT)) {
+            continue;
+        }
+        uint64_t file_off = region->file_off + off;
+        vfs_seek(f, file_off);
+        uint32_t phys = entry & PAGE_MASK;
+        vfs_write(f, (const void *)phys, PAGE_SIZE);
+    }
+}
+
 static int map_demand_page(struct vm_region *region, uint32_t addr) {
     uint32_t frame = acquire_frame();
 
@@ -283,6 +303,18 @@ static int map_demand_page(struct vm_region *region, uint32_t addr) {
         return -1;
     }
     memset((void *)frame, 0, PAGE_SIZE);
+    if (region->flags & VM_FILE && region->file) {
+        struct vfs_file *f = (struct vfs_file *)region->file;
+        uint64_t off = region->file_off + (addr - region->base);
+        vfs_seek(f, off);
+        int n = vfs_read(f, (void *)frame, PAGE_SIZE);
+        if (n < 0) {
+            pmm_free_frame(frame);
+            return -1;
+        }
+        /* Read less than a page just returns the available prefix; the
+         * remainder was already zeroed above. */
+    }
     if (paging_map(addr, frame, page_flags(region)) != 0) {
         pmm_free_frame(frame);
         return -1;
@@ -536,7 +568,13 @@ static int vmm_free_l(void *ptr) {
             paging_unmap(region->base + off);
         }
     } else {
+        flush_vm_file_region(region);
         vmm_release(region->base, region->size);
+    }
+    if (region->flags & VM_FILE && region->file) {
+        struct vfs_file *f = (struct vfs_file *)region->file;
+        vfs_close(f);
+        region->file = NULL;
     }
     region_unlink(current_space, region);
     region_release(region);

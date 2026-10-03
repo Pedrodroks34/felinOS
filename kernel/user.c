@@ -1363,14 +1363,14 @@ static int sys_sendto(struct regs *r) {
     struct sockaddr_in addr;
     struct vfs_file *f;
 
-    if (copy_sockaddr_in(r, arg4(r), &addr) < 0) {
+    if (copy_sockaddr_in(r, arg5(r), &addr) < 0) {
         return -1;
     }
     f = sock_arg(r, (int)arg1(r), arg2(r), arg3(r));
     if (!f) {
         return -1;
     }
-    return socket_sendto(f, (const void *)(uintptr_t)arg2(r), arg3(r), (int)arg5(r), &addr);
+    return socket_sendto(f, (const void *)(uintptr_t)arg2(r), arg3(r), (int)arg4(r), &addr);
 }
 
 static int sys_recvfrom(struct regs *r) {
@@ -1380,11 +1380,11 @@ static int sys_recvfrom(struct regs *r) {
     if (!f) {
         return -1;
     }
-    int n = socket_recvfrom(f, (void *)(uintptr_t)arg2(r), arg3(r), (int)arg5(r), &addr);
+    int n = socket_recvfrom(f, (void *)(uintptr_t)arg2(r), arg3(r), (int)arg4(r), &addr);
     if (n < 0) {
         return n;
     }
-    uint32_t addrp = arg4(r);
+    uint32_t addrp = arg5(r);
     if (addrp && uptr_ok(addrp, sizeof(addr))) {
         memcpy((void *)(uintptr_t)addrp, &addr, sizeof(addr));
     }
@@ -1524,19 +1524,36 @@ static int sys_mmap(struct regs *r) {
     if (prot & PROT_EXEC)  vflags |= VM_EXEC;
     if (flags & MAP_SHARED) vflags |= VM_SHARED;
 
-    /* A file-backed mapping would need page cache integration; only the
-     * anonymous case is wired up, so reject the rest instead of silently
-     * returning zero-filled memory the program expects to hold data. */
-    if (!(flags & MAP_ANONYMOUS) || (flags & MAP_SHARED) || fd != (uint32_t)-1) {
-        return -1;
+    struct vfs_file *map_file = NULL;
+    if (!(flags & MAP_ANONYMOUS)) {
+        /* File-backed mapping: take a reference to the fd file so the mapping
+         * stays valid after close(fd). Demand-page reads fill from the file. */
+        if (fd == (uint32_t)-1) {
+            return -1;
+        }
+        struct uproc *p = cur_proc();
+        if (fd >= MAX_FDS || !p->fds[fd]) {
+            return -1;
+        }
+        map_file = p->fds[fd];
+        if (prot & PROT_READ && !(map_file->flags & VFS_O_READ)) {
+            return -1;
+        }
+        if (prot & PROT_WRITE && !(map_file->flags & VFS_O_WRITE)) {
+            return -1;
+        }
+        vfs_file_ref(map_file);
+        vflags |= VM_FILE;
     }
 
     void *p;
     if (flags & MAP_FIXED) {
         if (!addr || (addr & PAGE_OFFSET(0))) {
+            if (map_file) vfs_close(map_file);
             return -1;
         }
         if (addr < USER_BASE || addr + len > USER_STACK_TOP) {
+            if (map_file) vfs_close(map_file);
             return -1;
         }
         /* MAP_FIXED replaces whatever was there, as on Linux. */
@@ -1546,7 +1563,15 @@ static int sys_mmap(struct regs *r) {
         p = vmm_alloc_range(MMAP_WINDOW_LO, MMAP_WINDOW_HI, len, vflags, "user-map");
     }
     if (!p) {
+        if (map_file) vfs_close(map_file);
         return -1;
+    }
+    /* Attach the file to the freshly created region. region_alloc zeroes,
+     * so file/file_off start as NULL/0 even for anonymous mappings. */
+    struct vm_region *region = vmm_find_region(vmm_current_space(), (uint32_t)(uintptr_t)p);
+    if (region && map_file) {
+        region->file = map_file;
+        region->file_off = off;
     }
     return (int)(uintptr_t)p;
 }
@@ -1622,8 +1647,40 @@ static int sys_madvise(struct regs *r) {
 }
 
 static int sys_msync(struct regs *r) {
-    /* Every filesystem Gato mounts writes through to the device already, so
-     * there is nothing buffered to push out. */
+    uint32_t addr = arg1(r);
+    uint32_t len = arg2(r);
+
+    if (addr & PAGE_OFFSET(0)) {
+        addr &= PAGE_MASK;
+    }
+    if (len && (addr + len) <= addr) {
+        return -1;
+    }
+    if (len) {
+        len = (len + PAGE_SIZE - 1) & PAGE_MASK;
+    }
+    struct vm_region *region = vmm_find_region(vmm_current_space(), addr);
+    if (!region || addr < region->base || addr + len > region->base + region->size) {
+        return -1;
+    }
+    /* Only file-backed regions need a real flush; anonymous demand pages have
+     * no disk backing. Shared writable mappings are flushed through. */
+    if (!(region->flags & VM_FILE) || !region->file ||
+        !(region->flags & (VM_WRITE | VM_SHARED))) {
+        return 0;
+    }
+    struct vfs_file *f = (struct vfs_file *)region->file;
+    for (uint32_t off = addr - region->base; off < addr - region->base + len; off += PAGE_SIZE) {
+        uint32_t page = region->base + off;
+        uint32_t entry = paging_get_entry(page);
+        if (!(entry & PAGE_PRESENT)) {
+            continue;
+        }
+        uint32_t phys = entry & PAGE_MASK;
+        uint64_t file_off = region->file_off + off;
+        vfs_seek(f, file_off);
+        vfs_write(f, (const void *)phys, PAGE_SIZE);
+    }
     return 0;
 }
 
@@ -1738,7 +1795,7 @@ static int sys_getrlimit(struct regs *r) {
     uint32_t res = arg1(r);
     uint32_t p = arg2(r);
 
-    if (!p || !uptr_ok(p, 8)) {
+    if (!p || !uptr_ok(p, sizeof(struct { uint64_t cur; uint64_t max; }))) {
         return -1;
     }
     struct { uint64_t cur; uint64_t max; } lim;
@@ -1889,8 +1946,15 @@ void syscall_dispatch(struct regs *r) {
     case SYS_GETTID:  ret = sched_current()->pid; break;
     case SYS_UNAME: {
         char *buf = (char *)(uintptr_t)a1;
-        if (uptr_ok(a1, 64)) {
-            strncpy(buf, "FelinOS\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 64);
+        if (uptr_ok(a1, sizeof(struct utsname))) {
+            struct utsname *u = (struct utsname *)buf;
+            memset(u, 0, sizeof(*u));
+            strlcpy(u->sysname, "FelinOS", sizeof(u->sysname));
+            strlcpy(u->nodename, "felinos", sizeof(u->nodename));
+            snprintf(u->release, sizeof(u->release), "0.2");
+            strlcpy(u->version, "#1 SMP", sizeof(u->version));
+            strlcpy(u->machine, "x86_64", sizeof(u->machine));
+            strlcpy(u->domainname, "localdomain", sizeof(u->domainname));
             ret = 0;
         }
         break;
@@ -1906,12 +1970,14 @@ void syscall_dispatch(struct regs *r) {
     }
     case SYS_NANOSLEEP: {
         uint32_t req = a1, rem = arg2(r);
-        if (uptr_ok(req, 8)) {
-            uint32_t ms = *(uint32_t *)(uintptr_t)req;
+        if (uptr_ok(req, sizeof(struct timespec))) {
+            struct timespec *ts = (struct timespec *)(uintptr_t)req;
+            uint32_t ms = ts->tv_sec * 1000u + ts->tv_nsec / 1000000u;
             sleep_ms(ms);
-            if (rem && uptr_ok(rem, 8)) {
-                *(uint32_t *)(uintptr_t)rem = 0;
-                *(uint32_t *)(uintptr_t)(rem + 4) = 0;
+            if (rem && uptr_ok(rem, sizeof(struct timespec))) {
+                struct timespec *r = (struct timespec *)(uintptr_t)rem;
+                r->tv_sec = 0;
+                r->tv_nsec = 0;
             }
             ret = 0;
         }
