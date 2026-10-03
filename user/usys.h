@@ -17,12 +17,15 @@ static inline sysint sys4(sysint n, sysint a, sysint b, sysint c, sysint d) {
 }
 static inline sysint sys5(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e) {
     sysint r;
-    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(e) : "memory");
+    register sysint r8 asm("r8") = e;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(r8) : "memory");
     return r;
 }
 static inline sysint sys6(sysint n, sysint a, sysint b, sysint c, sysint d, sysint e, sysint f) {
     sysint r;
-    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(e), "D"(f) : "memory");
+    register sysint r8 asm("r8") = e;
+    register sysint r9 asm("r9") = f;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d), "r"(r8), "r"(r9) : "memory");
     return r;
 }
 #else

@@ -16,6 +16,7 @@
 #define VM_PINNED     0x0200u
 #define VM_UNCACHED   0x0400u
 #define VM_GROWSDOWN  0x0800u
+#define VM_FILE       0x1000u
 
 #define VMM_HEAP_BASE     0xC0000000u
 #define VMM_HEAP_LIMIT    0xDFC00000u
@@ -42,6 +43,8 @@ struct vm_region {
     struct vm_space *space;
     struct vm_region *next;
     int in_use;
+    void *file;
+    uint64_t file_off;
 };
 
 struct vm_space {

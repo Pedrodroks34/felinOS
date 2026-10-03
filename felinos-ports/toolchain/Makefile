@@ -10,7 +10,7 @@ GCC_VERSION      := 14.1.0
 GMP_VERSION      := 6.3.0
 MPFR_VERSION     := 4.2.1
 MPC_VERSION      := 1.3.1
-ISL_VERSION      := 0.25
+ISL_VERSION      := 0.24
 
 # URLs
 BINUTILS_URL     := https://ftp.gnu.org/gnu/binutils/binutils-$(BINUTILS_VERSION).tar.xz
