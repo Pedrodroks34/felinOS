@@ -1,5 +1,6 @@
 # FelinOS kernel structures compatibility
-# Adapt musl's kernel headers to match FelinOS definitions
+# Adapt musl's kernel headers to match FelinOS native definitions
+# NOTE: Kernel uses minimal native structures; Linux-compatible conversion layer will be added in Phase 1
 
 --- a/arch/x86_64/bits/stat.h
 +++ b/arch/x86_64/bits/stat.h
@@ -9,6 +10,7 @@
  
 +#include <felinos/vfs.h>
 +
+ /* FelinOS native vfs_stat structure (matches kernel/fs/vfs.h) */
  struct stat {
 -	dev_t st_dev;
 -	ino_t st_ino;
@@ -24,22 +26,19 @@
 -	struct timespec st_mtim;
 -	struct timespec st_ctim;
 -	unsigned long __unused[3];
-+	uint64_t st_dev;
-+	uint64_t st_ino;
-+	uint32_t st_mode;
-+	uint32_t st_nlink;
-+	uint32_t st_uid;
-+	uint32_t st_gid;
-+	uint64_t st_rdev;
-+	int64_t  st_size;
-+	int64_t  st_blksize;
-+	int64_t  st_blocks;
-+	struct timespec st_atim;
-+	struct timespec st_mtim;
-+	struct timespec st_ctim;
-+	unsigned long __unused[3];
++	uint8_t  st_type;      /* VFS_FILE, VFS_DIR, VFS_CHR, VFS_BLK */
++	uint16_t st_mode;      /* file mode/permissions */
++	uint64_t st_size;      /* file size in bytes */
++	uint32_t st_mtime;     /* modification time (seconds since boot) */
++	uint32_t st_ino;       /* inode number */
++	uint16_t st_uid;       /* owner uid */
++	uint16_t st_gid;       /* owner gid */
++	/* Padding to match kernel structure exactly */
++	uint16_t __pad0;
++	uint32_t __pad1;
  };
  
+ /* Standard mode bits for userspace compatibility */
  #define S_IFMT  0170000
  #define S_IFSOCK 0140000
  #define S_IFLNK  0120000
@@ -60,6 +59,12 @@
  #define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
  #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
  
+ /* Map kernel VFS types to S_IF* */
+ #define S_IFVFS_FILE  S_IFREG
+ #define S_IFVFS_DIR   S_IFDIR
+ #define S_IFVFS_CHR   S_IFCHR
+ #define S_IFVFS_BLK   S_IFBLK
+ 
  #endif
  
 --- a/arch/x86_64/bits/dirent.h
@@ -70,17 +75,15 @@
  
 +#include <felinos/vfs.h>
 +
+ /* FelinOS native vfs_dirent structure (matches kernel/fs/vfs.h) */
  struct dirent {
 -	ino_t d_ino;
 -	off_t d_off;
 -	unsigned short d_reclen;
 -	unsigned char d_type;
 -	char d_name[256];
-+	uint64_t d_ino;
-+	int64_t  d_off;
-+	uint16_t d_reclen;
-+	uint8_t  d_type;
-+	char     d_name[256];
++	char     d_name[64];   /* VFS_NAME_MAX = 64 */
++	uint8_t  d_type;       /* VFS_FILE, VFS_DIR, VFS_CHR, VFS_BLK */
  };
  
  #define DT_UNKNOWN 0
@@ -91,6 +94,12 @@
  #define DT_FIFO    5
  #define DT_SOCK    6
  #define DT_LNK     7
+ 
+ /* Map kernel VFS types to DT_* */
+ #define DT_VFS_FILE  DT_REG
+ #define DT_VFS_DIR   DT_DIR
+ #define DT_VFS_CHR   DT_CHR
+ #define DT_VFS_BLK   DT_BLK
  
  #endif
  
@@ -119,12 +128,12 @@
  #define O_NOFOLLOW  00400000
  #define O_CLOEXEC   02000000
  
-+/* FelinOS VFS flags (mapped from kernel/vfs.h) */
-+#define VFS_O_READ       0x0001
-+#define VFS_O_WRITE      0x0002
-+#define VFS_O_CREATE     0x0004
-+#define VFS_O_TRUNC      0x0008
-+#define VFS_O_APPEND     0x0010
++/* FelinOS VFS flags (from kernel/fs/vfs.h) */
++#define VFS_O_READ       0x01
++#define VFS_O_WRITE      0x02
++#define VFS_O_CREATE     0x04
++#define VFS_O_TRUNC      0x08
++#define VFS_O_APPEND     0x10
 +
  #define F_DUPFD     0
  #define F_GETFD     1

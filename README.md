@@ -76,6 +76,63 @@ make clean        # removes objects, the kernel and the iso
 make distclean    # also removes the virtual disk images
 ```
 
+## Building Userspace (Ports)
+
+FelinOS uses a BSD-style ports tree in `felinos-ports/` to cross-compile userspace
+applications with musl libc.
+
+```sh
+# Build cross-compiler toolchain (binutils + GCC + Linux headers)
+make ports-toolchain
+
+# Build base system (musl + busybox + base filesystem layout)
+make ports-base
+
+# Build init system (s6 supervision suite)
+make ports-system
+
+# Build development tools (make, pkgconf)
+make ports-devel
+
+# Generate rootfs image (256 MB ext4)
+make ports-mkrootfs
+
+# Test in QEMU with rootfs
+make ports-test
+
+# Run userspace test harness
+python3 tools/test-userspace.py
+
+# Clean ports
+make ports-clean
+make ports-distclean
+
+# Show ports info
+make ports-info
+```
+
+Host requirements for ports:
+```sh
+# Debian/Ubuntu
+apt install build-essential wget tar xz-utils bzip2 gzip python3 sudo \
+    texinfo flex bison libgmp-dev libmpfr-dev libmpc-dev libisl-dev \
+    qemu-system-x86_64
+
+# Arch Linux
+pacman -S base-devel wget tar xz bzip2 gzip python sudo \
+    texinfo flex bison gmp mpfr mpc isl \
+    qemu-system-x86_64
+```
+
+For manual cross-compilation:
+```sh
+source tools/cross-env.sh
+$CC -o hello hello.c
+meson setup builddir --cross-file $CROSS_FILE
+meson compile -C builddir
+meson install -C builddir --destdir $SYSROOT
+```
+
 The kernel and the user programs build without warnings; the CI workflow
 fails the build if that ever stops being true.
 

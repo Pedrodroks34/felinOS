@@ -186,4 +186,41 @@ test: $(BIN) $(IMAGES)
 		-monitor none \
 		-no-reboot
 
-.PHONY: all run run-efi run-kernel run-serial run-smp clean distclean test
+# ============================================================================
+# Ports integration targets (felinos-ports)
+# ============================================================================
+PORTS_DIR := felinos-ports
+
+ports-toolchain:
+	$(MAKE) -C $(PORTS_DIR) toolchain
+
+ports-base:
+	$(MAKE) -C $(PORTS_DIR) base
+
+ports-system:
+	$(MAKE) -C $(PORTS_DIR) system
+
+ports-devel:
+	$(MAKE) -C $(PORTS_DIR) devel
+
+ports-full:
+	$(MAKE) -C $(PORTS_DIR) full
+
+ports-mkrootfs:
+	$(MAKE) -C $(PORTS_DIR) mkrootfs
+
+ports-test:
+	$(MAKE) -C $(PORTS_DIR) test-rootfs
+
+ports-clean:
+	$(MAKE) -C $(PORTS_DIR) clean
+
+ports-distclean:
+	$(MAKE) -C $(PORTS_DIR) distclean
+
+ports-info:
+	$(MAKE) -C $(PORTS_DIR) info
+
+.PHONY: all run run-efi run-kernel run-serial run-smp clean distclean test \
+        ports-toolchain ports-base ports-system ports-devel ports-full \
+        ports-mkrootfs ports-test ports-clean ports-distclean ports-info

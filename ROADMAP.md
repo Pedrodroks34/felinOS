@@ -16,13 +16,19 @@ Transformar o FelinOS de um hobby OS educacional em um sistema production-ready 
 
 ## Fases de Implementação
 
-### Fase 0: Infraestrutura Base (SEMANA 1-2) ✅ INÍCIO AGORA
-- [ ] Estrutura `felinos-ports/` com toolchain musl cross-compiler
-- [ ] Build system para ports (Makefile.port, config.mk)
-- [ ] Bootstrap musl libc + headers para target x86_64-felinos
-- [ ] Busybox config minimal + patches para syscalls FelinOS
-- [ ] Initramfs/userspace layout (/bin, /sbin, /usr/bin, /lib)
-- [ ] QEMU test harness para userspace
+### Fase 0: Infraestrutura Base (SEMANA 1-2) ✅ CONCLUÍDA
+- [x] Estrutura `felinos-ports/` com toolchain musl cross-compiler
+- [x] Build system para ports (Makefile, config.mk)
+- [x] Bootstrap musl libc + headers para target x86_64-felinos
+- [x] Busybox config minimal + patches para syscalls FelinOS
+- [x] Initramfs/userspace layout (/bin, /sbin, /usr/bin, /lib)
+- [x] QEMU test harness para userspace
+- [x] Init system (s6)
+- [x] Devel tools (make, pkgconf)
+- [x] Kernel skeletons para Fases 1-11
+- [x] Integração `make ports-*` no Makefile raiz
+- [x] Correção crítica: patches musl syscall numbers (off-by-one fix)
+- [x] Headers felinos públicos (vfs.h, net.h, syscall.h)
 
 ### Fase 1: Memory Management Avançado (SEMANA 3-5)
 - [ ] **SLUB allocator** (per-cpu partial slabs, NUMA-aware, slab merging)
@@ -270,15 +276,13 @@ Fase 0 (Ports/Toolchain)
 
 ---
 
-## Próximos Passos Imediatos (Esta Semana)
+## Próximos Passos Imediatos (Fase 1 - Memory Management)
 
-1. **Criar `felinos-ports/`** com estrutura acima
-2. **Baixar musl-1.2.5** + aplicar patches para syscalls FelinOS
-3. **Criar cross-compiler** `x86_64-felinos-musl-gcc`
-4. **Configurar busybox** com `CONFIG_FEATURE_SH_IS_ASH=y`, patches para `vfs` syscalls
-5. **Build rootfs mínimo** → testar `make run` com `/init` do busybox
-6. **Esqueletos kernel** para cada subsistema novo (arquivos `.c/.h` vazios com TODOs)
-7. **Atualizar Makefile** principal para integrar ports
+1. **SLUB allocator** (`kernel/mm/slub.c`) - substituir buddy allocator atual
+2. **Page cache unificado** (`kernel/mm/pagecache.c`) - struct page, address_space, radix tree
+3. **File-backed mmap** - estender `sys_mmap` em `kernel/user.c` para MAP_SHARED
+4. **Writeback infrastructure** (`kernel/mm/writeback.c`) - dirty inodes, flusher threads
+5. **Testes**: `make ports-toolchain && make ports-base && make test` validar M0
 
 ---
 
