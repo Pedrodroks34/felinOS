@@ -18,6 +18,7 @@
 #include "net/net.h"
 #include "net/netif.h"
 #include "net/dns.h"
+#include "mm/numa.h"
 
 extern void user_jump(uint64_t entry, uint64_t user_sp, int is32) __attribute__((noreturn));
 extern void fork_trampoline(struct regs *r) __attribute__((noreturn));
@@ -2219,6 +2220,51 @@ void syscall_dispatch(struct regs *r) {
         }
         ret = (int)p->brk;
         p->brk = nb;
+        break;
+    }
+    case SYS_MBIND: {
+        /* mbind(addr, len, mode, nmask, maxnode, flags) */
+        uint32_t addr = a1;
+        uint32_t len = arg2(r);
+        int mode = (int)arg3(r);
+        uint32_t nmask_ptr = arg4(r);
+        uint32_t maxnode = arg5(r);
+        int flags = (int)arg6(r);
+        uint32_t nmask = 0;
+        if (nmask_ptr && maxnode > 0 && uptr_ok(nmask_ptr, 4)) {
+            memcpy(&nmask, (void *)(uintptr_t)nmask_ptr, 4);
+        }
+        ret = numa_mbind(addr, len, mode, &nmask, maxnode, flags);
+        break;
+    }
+    case SYS_SET_MEMPOLICY: {
+        /* set_mempolicy(mode, nmask, maxnode) */
+        int mode = (int)a1;
+        uint32_t nmask_ptr = arg2(r);
+        uint32_t maxnode = arg3(r);
+        uint32_t nmask = 0;
+        if (nmask_ptr && maxnode > 0 && uptr_ok(nmask_ptr, 4)) {
+            memcpy(&nmask, (void *)(uintptr_t)nmask_ptr, 4);
+        }
+        ret = numa_set_mempolicy(mode, &nmask, maxnode);
+        break;
+    }
+    case SYS_GET_MEMPOLICY: {
+        /* get_mempolicy(policy, nmask, maxnode, addr) */
+        uint32_t policy_ptr = a1;
+        uint32_t nmask_ptr = arg2(r);
+        uint32_t maxnode = arg3(r);
+        uint32_t addr = arg4(r);
+        int policy = numa_get_policy();
+        uint32_t nmask = numa_get_default_node_mask();
+        if (policy_ptr && uptr_ok(policy_ptr, 4)) {
+            memcpy((void *)(uintptr_t)policy_ptr, &policy, 4);
+        }
+        if (nmask_ptr && maxnode > 0 && uptr_ok(nmask_ptr, 4)) {
+            nmask &= ((1u << maxnode) - 1);
+            memcpy((void *)(uintptr_t)nmask_ptr, &nmask, 4);
+        }
+        ret = 0;
         break;
     }
     default: break;

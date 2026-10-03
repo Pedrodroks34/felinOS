@@ -7,6 +7,7 @@
 #include "paging.h"
 #include "vmm.h"
 #include "fs/vfs.h"
+#include "mm/pagecache.h"
 #include "syscall.h"
 #include "lib/heap.h"
 #include "drivers/rtc.h"
@@ -132,6 +133,28 @@ int test_heap(void) {
     return 0;
 }
 
+int test_pagecache(void) {
+    vfs_mkdir(TEST_MNT);
+    TEST_ASSERT(vfs_mount("ramfs", NULL, TEST_MNT) == 0, "Can mount ramfs");
+
+    struct vfs_file *f;
+    TEST_ASSERT(vfs_open(TEST_MNT "/pcache.txt", VFS_O_WRITE | VFS_O_CREATE, &f) == 0, "Can create page cache test file");
+    TEST_ASSERT(vfs_write(f, "page-cache", 10) == 10, "Can write via page cache");
+    vfs_close(f);
+
+    TEST_ASSERT(vfs_open(TEST_MNT "/pcache.txt", VFS_O_READ, &f) == 0, "Can open for page cache read");
+    char buf[32];
+    uint32_t n = vfs_read(f, buf, sizeof(buf));
+    TEST_ASSERT(n == 10, "Page cache read returns data length");
+    TEST_ASSERT(memcmp(buf, "page-cache", 10) == 0, "Page cache read matches written data");
+    vfs_close(f);
+
+    TEST_ASSERT(vfs_unlink(TEST_MNT "/pcache.txt") == 0, "Can unlink page cache test file");
+    TEST_ASSERT(vfs_umount(TEST_MNT) == 0, "Can unmount ramfs after page cache test");
+    vfs_rmdir(TEST_MNT);
+    return 0;
+}
+
 int test_string(void) {
     char buf[64];
     TEST_ASSERT(strlen("hello") == 5, "strlen works");
@@ -189,6 +212,7 @@ void run_all_tests(void) {
     run_test("Paging", test_paging);
     run_test("VMM", test_vmm);
     run_test("VFS", test_vfs);
+    run_test("PageCache", test_pagecache);
     run_test("Heap", test_heap);
     run_test("String", test_string);
     run_test("Format", test_format);

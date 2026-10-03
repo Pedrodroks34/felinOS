@@ -1,6 +1,8 @@
 #ifndef FELINOS_SCHED_H
 #define FELINOS_SCHED_H
 
+#include "mm/numa.h"
+#include "mm/cgroup.h"
 #include <stdint.h>
 #include "idt.h"
 #include "vmm.h"
@@ -72,6 +74,8 @@ struct task {
     int sync_grant;      /* semaphore token handed over by sem_post() */
     uint32_t wait_seq;   /* FIFO order among tasks blocked on one channel */
     uint32_t kpreempted; /* times this task was preempted inside the kernel */
+    struct numa_policy_state *numa_policy;
+    struct cgroup_mem *cgroup;
     uint8_t fpu[FPU_STATE_SIZE] __attribute__((aligned(16)));
 };
 

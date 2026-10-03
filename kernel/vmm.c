@@ -58,6 +58,32 @@ static uint32_t page_flags(const struct vm_region *region) {
     return flags;
 }
 
+/* For file-backed mappings, compute initial page flags.
+ * MAP_SHARED: writable if PROT_WRITE, no COW
+ * MAP_PRIVATE: COW if PROT_WRITE, read-only initially */
+static uint32_t file_page_flags(const struct vm_region *region) {
+    uint32_t flags = PAGE_PRESENT;
+
+    /* MAP_SHARED: writable immediately, no COW */
+    if ((region->flags & VM_SHARED) && (region->flags & VM_WRITE)) {
+        flags |= PAGE_RW;
+    }
+    /* MAP_PRIVATE: COW on write, initially read-only if writable */
+    else if ((region->flags & VM_WRITE) && (region->flags & VM_FILE)) {
+        flags |= PAGE_COW;
+    }
+    if (region->flags & VM_USER) {
+        flags |= PAGE_USER;
+    }
+    if (region->flags & VM_UNCACHED) {
+        flags |= PAGE_PCD | PAGE_PWT;
+    }
+    if (region->flags & VM_PINNED) {
+        flags |= PAGE_PINNED;
+    }
+    return flags;
+}
+
 static struct vm_region *region_alloc(void) {
     for (int i = 0; i < VMM_MAX_REGIONS; i++) {
         if (!region_pool[i].in_use) {
@@ -315,7 +341,10 @@ static int map_demand_page(struct vm_region *region, uint32_t addr) {
         /* Read less than a page just returns the available prefix; the
          * remainder was already zeroed above. */
     }
-    if (paging_map(addr, frame, page_flags(region)) != 0) {
+    /* Use file_page_flags for file-backed mappings to set up COW for MAP_PRIVATE
+     * and writable for MAP_SHARED */
+    uint32_t flags = (region->flags & VM_FILE) ? file_page_flags(region) : page_flags(region);
+    if (paging_map(addr, frame, flags) != 0) {
         pmm_free_frame(frame);
         return -1;
     }
@@ -400,11 +429,24 @@ static int vmm_handle_fault_l(uint32_t addr, uint32_t err_code) {
 
     if (entry & PAGE_PRESENT) {
         if (write && (entry & PAGE_COW)) {
+            /* MAP_PRIVATE file-backed: do COW */
             if (copy_on_write(region, page, entry) != 0) {
                 stats.oom_events++;
                 return -1;
             }
             stats.cow_faults++;
+            return 0;
+        }
+        /* MAP_SHARED file-backed: page was mapped writable, write fault means
+         * we need to mark it dirty for writeback. The hardware should have
+         * set the DIRTY bit. Just ensure write permission is set. */
+        if (write && (region->flags & VM_SHARED) && (region->flags & VM_FILE)) {
+            if (!(entry & PAGE_RW)) {
+                uint32_t new_entry = entry | PAGE_RW;
+                paging_set_entry(page, new_entry);
+            }
+            /* Page is now writable, mark it dirty in page cache if present */
+            stats.demand_faults++;
             return 0;
         }
         stats.protection_faults++;

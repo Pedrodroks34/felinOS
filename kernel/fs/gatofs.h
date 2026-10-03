@@ -78,6 +78,7 @@ int gatofs_touch(const char *path);
 
 /* file handles for apps */
 int gatofs_open(const char *path, int flags);   /* fd >= 0 or error */
+int gatofs_open_by_ino(uint32_t ino, int flags);  /* for writeback */
 int gatofs_read(int fd, void *buf, uint32_t len);
 int gatofs_write(int fd, const void *buf, uint32_t len);
 int gatofs_truncate(int fd, uint32_t size);

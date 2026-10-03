@@ -125,6 +125,27 @@ static int be_open(struct vfs_mount *m, const char *path, int flags, struct vfs_
         vf |= VF_APPEND;
     }
 
+    /* Handle synthetic path for writeback: #ino:N */
+    if (path[0] == '#' && path[1] == 'i' && path[2] == 'n' && path[3] == 'o' && path[4] == ':') {
+        uint32_t ino = 0;
+        for (int i = 5; path[i]; i++) {
+            if (path[i] >= '0' && path[i] <= '9') {
+                ino = ino * 10 + (path[i] - '0');
+            }
+        }
+        if (ino != 0) {
+            gatofs_fs_lock();
+            int fd = gatofs_open_by_ino(ino, vf);
+            gatofs_fs_unlock();
+            if (fd >= 0) {
+                f->priv = (void *)(uintptr_t)(fd + 1);
+                f->pos = 0;
+                return VFS_OK;
+            }
+            return fd;
+        }
+    }
+
     gatofs_fs_lock();
     int fd = gatofs_open(path, vf);
     gatofs_fs_unlock();

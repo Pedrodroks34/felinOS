@@ -233,9 +233,43 @@ static int ramfs_stat(struct vfs_mount *m, const char *path, struct vfs_stat *st
     return VFS_OK;
 }
 
+static struct rnode *find_by_ino(struct rnode *root, uint32_t ino) {
+    if (root->ino == ino) {
+        return root;
+    }
+    for (struct rnode *c = root->children; c; c = c->next) {
+        struct rnode *found = find_by_ino(c, ino);
+        if (found) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
 static int ramfs_open(struct vfs_mount *m, const char *path, int flags, struct vfs_file *f) {
     struct ramfs *fs = (struct ramfs *)m->priv;
     struct rnode *n;
+
+    /* Handle synthetic path for writeback: #ino:N */
+    if (path[0] == '#' && path[1] == 'i' && path[2] == 'n' && path[3] == 'o' && path[4] == ':') {
+        uint32_t ino = 0;
+        for (int i = 5; path[i]; i++) {
+            if (path[i] >= '0' && path[i] <= '9') {
+                ino = ino * 10 + (path[i] - '0');
+            }
+        }
+        if (ino != 0) {
+            n = find_by_ino(fs->root, ino);
+            if (n && n->type == VFS_FILE) {
+                n->opens++;
+                f->priv = n;
+                f->pos = 0;
+                return VFS_OK;
+            }
+        }
+        return VFS_ENOENT;
+    }
+
     int r = resolve(fs, path, &n);
 
     if (r == VFS_ENOENT && (flags & VFS_O_CREATE)) {

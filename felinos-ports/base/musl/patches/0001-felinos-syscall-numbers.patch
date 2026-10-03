@@ -122,6 +122,11 @@
 +#define __NR_felinOS_getifaddr      95  /* getifaddr(k_ifinfo*)           */
 +#define __NR_felinOS_getifaddrs     96  /* getifaddrs(k_ifinfo*, max)     */
 +
++/* NUMA syscalls */
++#define __NR_felinOS_mbind          97  /* mbind(addr, len, mode, nmask, maxnode, flags) */
++#define __NR_felinOS_set_mempolicy  98  /* set_mempolicy(mode, nmask, maxnode) */
++#define __NR_felinOS_get_mempolicy  99  /* get_mempolicy(policy, nmask, maxnode, addr) */
++
 +/* FelinOS-specific syscalls (for future phases) */
 +#define __NR_felinOS_vmm_op         100
 +#define __NR_felinOS_pmm_op         101
@@ -247,6 +252,11 @@
 +#define __NR_felinOS_gethostbyname  94  /* gethostbyname(name, addr_out)  */
 +#define __NR_felinOS_getifaddr      95  /* getifaddr(k_ifinfo*)           */
 +#define __NR_felinOS_getifaddrs     96  /* getifaddrs(k_ifinfo*, max)     */
++
++/* NUMA syscalls */
++#define __NR_felinOS_mbind          97  /* mbind(addr, len, mode, nmask, maxnode, flags) */
++#define __NR_felinOS_set_mempolicy  98  /* set_mempolicy(mode, nmask, maxnode) */
++#define __NR_felinOS_get_mempolicy  99  /* get_mempolicy(policy, nmask, maxnode, addr) */
 +
 +/* FelinOS-specific syscalls (for future phases) */
 +#define __NR_felinOS_vmm_op         100

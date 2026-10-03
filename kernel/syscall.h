@@ -103,6 +103,11 @@
 #define SYS_GETIFADDR   95  /* getifaddr(struct k_ifinfo*)                */
 #define SYS_GETIFADDRS  96  /* getifaddrs(struct k_ifinfo*, int max) -> n  */
 
+/* NUMA syscalls */
+#define SYS_MBIND       97  /* mbind(addr, len, mode, nmask, maxnode, flags) */
+#define SYS_SET_MEMPOLICY 98 /* set_mempolicy(mode, nmask, maxnode) */
+#define SYS_GET_MEMPOLICY 99 /* get_mempolicy(policy, nmask, maxnode, addr) */
+
 struct k_ifinfo {
     uint32_t ip;         /* host byte order, 0 when the link is down */
     uint32_t netmask;

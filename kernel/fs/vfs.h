@@ -132,6 +132,7 @@ struct vfs_file {
     uint64_t pos;
     int flags;
     int refs;
+    uint32_t ino;
 };
 
 extern const struct fs_ops ramfs_ops;
@@ -183,6 +184,9 @@ int vfs_ftruncate(struct vfs_file *f, uint64_t size);
 int vfs_truncate(const char *path, uint64_t size);
 int vfs_fcntl(struct vfs_file *f, int cmd, uint32_t arg);
 int vfs_ioctl(struct vfs_file *f, uint32_t request, uint32_t arg);
+
+/* Writeback support: open file by inode for internal writeback */
+struct vfs_file *vfs_open_by_ino(struct vfs_mount *m, uint32_t ino, int flags);
 int vfs_getcwd_buf(char *buf, uint32_t size);
 int vfs_fchdir(struct vfs_file *f);
 int vfs_link(const char *oldpath, const char *newpath);

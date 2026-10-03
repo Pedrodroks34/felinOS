@@ -921,6 +921,25 @@ int gatofs_autoformat(void) {
 }
 
 /* ---- file handles ---- */
+/* Open file by inode number (for writeback) */
+int gatofs_open_by_ino(uint32_t ino, int flags) {
+    int fd = -1;
+    for (int i = 0; i < MAX_FD; i++) if (!fds[i].used) { fd = i; break; }
+    if (fd < 0) return GATOFS_ENOSPC;
+
+    struct vinode in;
+    if (iread(ino, &in) < 0) return GATOFS_EIO;
+    if (in.type == GATOFS_DIR) return GATOFS_EISDIR;
+    if ((flags & VF_TRUNC) && (flags & VF_WRITE)) {
+        itrunc(&in);
+        in.mtime = rtc_unix();
+        if (iwrite(ino, &in) < 0) return GATOFS_EIO;
+    }
+    fds[fd].used = 1; fds[fd].ino = ino; fds[fd].flags = flags;
+    fds[fd].pos = (flags & VF_APPEND) ? in.size : 0;
+    return fd;
+}
+
 int gatofs_open(const char *path, int flags) {
     int fd = -1;
     for (int i = 0; i < MAX_FD; i++) if (!fds[i].used) { fd = i; break; }

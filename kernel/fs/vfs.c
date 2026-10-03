@@ -1,4 +1,5 @@
 #include "fs/vfs.h"
+#include "mm/pagecache.h"
 #include "sync.h"
 #include "lib/heap.h"
 #include "lib/string.h"
@@ -65,6 +66,7 @@ const char *vfs_strerror(int err) {
 void vfs_init(void) {
     memset(mounts, 0, sizeof(mounts));
     strcpy(cwd, "/");
+    pagecache_init();
 }
 
 int vfs_normalize(const char *path, char *out, size_t size) {
@@ -307,6 +309,7 @@ static int vfs_umount_l(const char *target) {
     if (m->ops->umount) {
         m->ops->umount(m);
     }
+    pagecache_invalidate_mount(m);
     memset(m, 0, sizeof(*m));
     return VFS_OK;
 }
@@ -497,6 +500,7 @@ static int vfs_open_l(const char *path, int flags, struct vfs_file **out) {
     f->mnt = m;
     f->flags = flags;
     f->refs = 1;
+    f->ino = has_stat ? st.ino : 0;
     r = m->ops->open(m, rel, flags, f);
     if (r < 0) {
         kfree(f);
@@ -517,7 +521,13 @@ int vfs_read(struct vfs_file *f, void *buf, uint32_t len) {
     if (len == 0) {
         return 0;
     }
-    return f->mnt->ops->read(f, buf, len);
+    uint64_t old_pos = f->pos;
+    int n = pagecache_read(f, buf, len, f->pos);
+
+    if (n > 0) {
+        f->pos = old_pos + (uint32_t)n;
+    }
+    return n;
 }
 
 int vfs_write(struct vfs_file *f, const void *buf, uint32_t len) {
@@ -530,7 +540,13 @@ int vfs_write(struct vfs_file *f, const void *buf, uint32_t len) {
     if (len == 0) {
         return 0;
     }
-    return f->mnt->ops->write(f, buf, len);
+    uint64_t old_pos = f->pos;
+    int n = pagecache_write(f, buf, len, f->pos);
+
+    if (n > 0) {
+        f->pos = old_pos + (uint32_t)n;
+    }
+    return n;
 }
 
 void vfs_seek(struct vfs_file *f, uint64_t pos) {
@@ -755,6 +771,9 @@ static int remove_checked(const char *path, int want_dir) {
     if (!m->ops->remove) {
         return VFS_EPERM;
     }
+    /* Invalidate page cache before removing the file so stale pages
+     * aren't reused if the inode number is recycled. */
+    pagecache_invalidate(m, st.ino);
     return m->ops->remove(m, rel);
 }
 
@@ -1494,7 +1513,11 @@ int vfs_ftruncate(struct vfs_file *f, uint64_t size) {
     if (!(f->flags & VFS_O_WRITE)) {
         return VFS_EACCES;
     }
-    return f->mnt->ops->truncate(f, size);
+    int r = f->mnt->ops->truncate(f, size);
+    if (r == 0) {
+        pagecache_invalidate(f->mnt, f->ino);
+    }
+    return r;
 }
 
 int vfs_truncate(const char *path, uint64_t size) {
@@ -1627,4 +1650,41 @@ int vfs_readdir_fd(struct vfs_file *f, char *buf, uint32_t count) {
 
 void vfs_file_ref(struct vfs_file *f) {
     __atomic_add_fetch(&f->refs, 1, __ATOMIC_SEQ_CST);
+}
+
+struct vfs_file *vfs_open_by_ino(struct vfs_mount *m, uint32_t ino, int flags) {
+    if (!m || !m->ops || !m->ops->open) {
+        return NULL;
+    }
+    /* We need a path to open the file. Since we only have the inode,
+     * we'll use a special synthetic path. For ramfs/gatofs, we can
+     * iterate the directory tree to find the path by inode, but that's
+     * expensive. Instead, we'll store the inode in the file's priv and
+     * let the filesystem handle it. */
+    
+    /* For now, create a synthetic file with the inode - the filesystem
+     * must support opening by inode. We'll use a special path format. */
+    char synthetic_path[32];
+    int n = snprintf(synthetic_path, sizeof(synthetic_path), "#ino:%u", ino);
+    if (n < 0 || n >= (int)sizeof(synthetic_path)) {
+        return NULL;
+    }
+    
+    struct vfs_file *f = (struct vfs_file *)kzalloc(sizeof(struct vfs_file));
+    if (!f) {
+        return NULL;
+    }
+    f->mnt = m;
+    f->flags = flags;
+    f->refs = 1;
+    f->ino = ino;
+    f->pos = 0;
+    
+    int r = m->ops->open(m, synthetic_path, flags, f);
+    if (r < 0) {
+        kfree(f);
+        return NULL;
+    }
+    __atomic_add_fetch(&m->open_files, 1, __ATOMIC_SEQ_CST);
+    return f;
 }

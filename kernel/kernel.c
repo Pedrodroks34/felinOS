@@ -9,6 +9,12 @@
 #include "paging.h"
 #include "vmm.h"
 #include "swap.h"
+#include "mm/writeback.h"
+#include "mm/ksm.h"
+#include "mm/zswap.h"
+#include "mm/numa.h"
+#include "mm/cgroup.h"
+#include "mm/huge.h"
 #include "lib/heap.h"
 #include "lib/string.h"
 #include "drivers/vga.h"
@@ -257,6 +263,14 @@ void kernel_main(uint32_t magic, struct multiboot_info *mbi) {
     boot_step("swap", detail);
 
     vfs_init();
+    writeback_init();
+    ksm_init();
+    ksm_start_thread();
+    zswap_init();
+    numa_init();
+    cgroup_mem_init();
+    huge_init();
+    huge_reserve_2mb(64);  /* Reserve 128MB for huge pages */
 
     int fresh_volume = 0;
     int populated = 0;
